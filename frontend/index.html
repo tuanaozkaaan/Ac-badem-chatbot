@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Acibadem RAG Demo</title>
+    <style>
+      :root {
+        --bg: #0b1020;
+        --panel: #121a33;
+        --panel-soft: #182247;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #5b8cff;
+        --accent-hover: #4778ef;
+        --border: #2a3767;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: Inter, Arial, sans-serif;
+        background: radial-gradient(circle at top, #1a2550 0%, var(--bg) 55%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      .container {
+        max-width: 840px;
+        margin: 48px auto;
+        background: linear-gradient(180deg, var(--panel) 0%, var(--panel-soft) 100%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 26px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 24px;
+      }
+      p {
+        color: var(--muted);
+      }
+      code {
+        color: #bfdbfe;
+        background: rgba(191, 219, 254, 0.1);
+        border: 1px solid rgba(191, 219, 254, 0.18);
+        border-radius: 6px;
+        padding: 2px 6px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 110px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        resize: vertical;
+        font-size: 14px;
+        background: #0f1733;
+        color: var(--text);
+        outline: none;
+      }
+      textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.2);
+      }
+      button {
+        margin-top: 12px;
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 16px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        transition: background 0.2s ease, transform 0.08s ease;
+      }
+      button:hover {
+        background: var(--accent-hover);
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      button:disabled {
+        background: #5f77b8;
+        cursor: not-allowed;
+      }
+      .answer {
+        margin-top: 20px;
+        background: #0f1733;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        white-space: pre-wrap;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Acibadem University RAG Demo</h1>
+      <p>Backend endpoint: <code>http://127.0.0.1:8000/ask</code></p>
+
+      <textarea id="question" placeholder="Ask a question about Acibadem University..."></textarea>
+      <button id="askBtn">Ask</button>
+
+      <div class="answer" id="answerBox">Answer will appear here.</div>
+    </div>
+
+    <script>
+      const askBtn = document.getElementById("askBtn");
+      const questionInput = document.getElementById("question");
+      const answerBox = document.getElementById("answerBox");
+
+      askBtn.addEventListener("click", async () => {
+        const question = questionInput.value.trim();
+        if (!question) {
+          answerBox.textContent = "Please enter a question.";
+          return;
+        }
+
+        askBtn.disabled = true;
+        answerBox.textContent = "Thinking...";
+
+        try {
+          const response = await fetch("http://127.0.0.1:8000/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question }),
+          });
+
+          if (!response.ok) {
+            const err = await response.text();
+            answerBox.textContent = `API error: ${err}`;
+            return;
+          }
+
+          const data = await response.json();
+          answerBox.textContent = data.answer || "No answer returned.";
+        } catch (error) {
+          answerBox.textContent = `Connection error: ${error.message}`;
+        } finally {
+          askBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
