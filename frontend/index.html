@@ -3,147 +3,487 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Acibadem RAG Demo</title>
+    <title>ACUdost</title>
     <style>
       :root {
-        --bg: #0b1020;
-        --panel: #121a33;
-        --panel-soft: #182247;
-        --text: #e5e7eb;
-        --muted: #9ca3af;
-        --accent: #5b8cff;
-        --accent-hover: #4778ef;
-        --border: #2a3767;
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-soft: #202530;
+        --panel-border: #2a313d;
+        --text: #e7eaf0;
+        --muted: #9aa4b2;
+        --accent: #4d7cff;
+        --accent-hover: #3f69db;
+        --assistant-bubble: #212632;
+        --user-bubble: #3551a6;
       }
+
       * {
         box-sizing: border-box;
       }
+
+      html,
+      body {
+        height: 100%;
+      }
+
       body {
         margin: 0;
-        font-family: Inter, Arial, sans-serif;
-        background: radial-gradient(circle at top, #1a2550 0%, var(--bg) 55%);
+        padding: 0;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        background-image: url("./assets/acibadem-campus.png");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
         color: var(--text);
-        min-height: 100vh;
+        position: relative;
       }
-      .container {
-        max-width: 840px;
-        margin: 48px auto;
-        background: linear-gradient(180deg, var(--panel) 0%, var(--panel-soft) 100%);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 26px;
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.58);
+        backdrop-filter: blur(2px);
+        z-index: 0;
+        pointer-events: none;
       }
-      h1 {
-        margin-top: 0;
-        font-size: 24px;
+
+      .app {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        height: 100vh;
+        position: relative;
+        z-index: 1;
       }
-      p {
-        color: var(--muted);
+
+      .sidebar {
+        border-right: 1px solid var(--panel-border);
+        background: #13161d;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
       }
-      code {
-        color: #bfdbfe;
-        background: rgba(191, 219, 254, 0.1);
-        border: 1px solid rgba(191, 219, 254, 0.18);
-        border-radius: 6px;
-        padding: 2px 6px;
-      }
-      textarea {
-        width: 100%;
-        min-height: 110px;
-        padding: 12px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        resize: vertical;
-        font-size: 14px;
-        background: #0f1733;
+
+      .new-chat-btn {
+        border: 1px solid var(--panel-border);
+        background: #1b202a;
         color: var(--text);
-        outline: none;
-      }
-      textarea:focus {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.2);
-      }
-      button {
-        margin-top: 12px;
-        background: var(--accent);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 10px 16px;
+        padding: 10px 12px;
+        border-radius: 10px;
         cursor: pointer;
         font-size: 14px;
-        font-weight: 600;
-        transition: background 0.2s ease, transform 0.08s ease;
       }
-      button:hover {
+
+      .new-chat-btn:hover {
+        background: #212733;
+      }
+
+      .sidebar-title {
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .history {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        overflow: auto;
+      }
+
+      .history-item {
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid transparent;
+        background: #171c25;
+        color: #cdd5e1;
+        font-size: 13px;
+      }
+
+      .history-item.active {
+        border-color: var(--panel-border);
+        background: #1f2531;
+      }
+
+      .main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      .topbar {
+        height: 60px;
+        border-bottom: 1px solid var(--panel-border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 20px;
+        background: rgba(15, 17, 21, 0.92);
+        backdrop-filter: blur(6px);
+      }
+
+      .topbar h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .chat-shell {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .messages-wrap {
+        flex: 1;
+        overflow: auto;
+        padding: 26px 18px 16px;
+      }
+
+      .messages {
+        max-width: 860px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .welcome {
+        max-width: 720px;
+        margin: 80px auto 0;
+        text-align: center;
+        color: var(--muted);
+      }
+
+      .welcome h2 {
+        margin: 0 0 10px;
+        color: var(--text);
+        font-size: 28px;
+      }
+
+      .message-row {
+        display: flex;
+      }
+
+      .message-row.assistant {
+        justify-content: flex-start;
+      }
+
+      .message-row.user {
+        justify-content: flex-end;
+      }
+
+      .bubble {
+        max-width: min(80%, 700px);
+        border-radius: 16px;
+        padding: 12px 14px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .bubble.assistant {
+        background: var(--assistant-bubble);
+        border: 1px solid #31394a;
+      }
+
+      .bubble.user {
+        background: var(--user-bubble);
+        border: 1px solid #4a66ba;
+      }
+
+      .loading-dots {
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+      }
+
+      .loading-dots span {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #aeb8c7;
+        opacity: 0.35;
+        animation: blink 1s infinite ease-in-out;
+      }
+
+      .loading-dots span:nth-child(2) {
+        animation-delay: 0.15s;
+      }
+
+      .loading-dots span:nth-child(3) {
+        animation-delay: 0.3s;
+      }
+
+      @keyframes blink {
+        0%,
+        80%,
+        100% {
+          opacity: 0.3;
+          transform: scale(1);
+        }
+        40% {
+          opacity: 1;
+          transform: scale(1.15);
+        }
+      }
+
+      .composer-wrap {
+        border-top: 1px solid var(--panel-border);
+        padding: 14px 18px 18px;
+        background: #0f1115;
+      }
+
+      .composer {
+        max-width: 860px;
+        margin: 0 auto;
+        border: 1px solid var(--panel-border);
+        background: var(--panel);
+        border-radius: 16px;
+        padding: 10px;
+      }
+
+      .input-box {
+        width: 100%;
+        min-height: 48px;
+        max-height: 180px;
+        resize: none;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: var(--text);
+        font-size: 15px;
+        line-height: 1.45;
+        font-family: inherit;
+      }
+
+      .composer-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 8px;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .send-btn {
+        border: 0;
+        border-radius: 10px;
+        background: var(--accent);
+        color: white;
+        font-weight: 600;
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+
+      .send-btn:hover {
         background: var(--accent-hover);
       }
-      button:active {
-        transform: translateY(1px);
-      }
-      button:disabled {
-        background: #5f77b8;
+
+      .send-btn:disabled {
+        opacity: 0.6;
         cursor: not-allowed;
       }
-      .answer {
-        margin-top: 20px;
-        background: #0f1733;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 14px;
-        white-space: pre-wrap;
-        line-height: 1.5;
+
+      @media (max-width: 920px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          display: none;
+        }
+
+        .messages-wrap {
+          padding: 16px 12px 10px;
+        }
+
+        .composer-wrap {
+          padding: 10px 12px 14px;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="container">
-      <h1>Acibadem University RAG Demo</h1>
-      <p>Backend endpoint: <code>http://127.0.0.1:8000/ask</code></p>
+    <div class="app">
+      <aside class="sidebar">
+        <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
+        <div class="sidebar-title">Recent Conversations</div>
+        <div class="history">
+          <div class="history-item active">Acibadem Overview</div>
+          <div class="history-item">Admissions Questions</div>
+          <div class="history-item">Campus Facilities</div>
+        </div>
+      </aside>
 
-      <textarea id="question" placeholder="Ask a question about Acibadem University..."></textarea>
-      <button id="askBtn">Ask</button>
+      <main class="main">
+        <header class="topbar">
+          <h1>ACUdost</h1>
+        </header>
 
-      <div class="answer" id="answerBox">Answer will appear here.</div>
+        <section class="chat-shell">
+          <div class="messages-wrap" id="messagesWrap">
+            <div class="messages" id="messages"></div>
+            <div class="welcome" id="welcome">
+              <h2>How can I help you today?</h2>
+              <p>Ask anything about Acibadem University.</p>
+            </div>
+          </div>
+
+          <div class="composer-wrap">
+            <div class="composer">
+              <textarea
+                class="input-box"
+                id="questionInput"
+                placeholder="Message ACUdost..."
+                rows="1"
+              ></textarea>
+              <div class="composer-footer">
+                <span class="hint">Enter to send, Shift + Enter for new line</span>
+                <button class="send-btn" id="sendBtn">Send</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
 
     <script>
-      const askBtn = document.getElementById("askBtn");
-      const questionInput = document.getElementById("question");
-      const answerBox = document.getElementById("answerBox");
+      const API_URL = "http://127.0.0.1:8001/ask";
+      const messagesEl = document.getElementById("messages");
+      const messagesWrapEl = document.getElementById("messagesWrap");
+      const welcomeEl = document.getElementById("welcome");
+      const questionInput = document.getElementById("questionInput");
+      const sendBtn = document.getElementById("sendBtn");
+      const newChatBtn = document.getElementById("newChatBtn");
 
-      askBtn.addEventListener("click", async () => {
-        const question = questionInput.value.trim();
-        if (!question) {
-          answerBox.textContent = "Please enter a question.";
-          return;
+      const conversation = [];
+      let loadingBubble = null;
+
+      function autoResizeInput() {
+        questionInput.style.height = "auto";
+        questionInput.style.height = `${Math.min(questionInput.scrollHeight, 180)}px`;
+      }
+
+      function scrollToBottom() {
+        messagesWrapEl.scrollTop = messagesWrapEl.scrollHeight;
+      }
+
+      function renderWelcome() {
+        welcomeEl.style.display = conversation.length ? "none" : "block";
+      }
+
+      function createMessageBubble(role, text) {
+        const row = document.createElement("div");
+        row.className = `message-row ${role}`;
+
+        const bubble = document.createElement("div");
+        bubble.className = `bubble ${role}`;
+        bubble.textContent = text;
+
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+        return bubble;
+      }
+
+      function addMessage(role, text) {
+        conversation.push({ role, text });
+        createMessageBubble(role, text);
+        renderWelcome();
+        scrollToBottom();
+      }
+
+      function showLoading() {
+        const row = document.createElement("div");
+        row.className = "message-row assistant";
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble assistant";
+        bubble.innerHTML =
+          '<span class="loading-dots"><span></span><span></span><span></span></span>';
+
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+        loadingBubble = row;
+        renderWelcome();
+        scrollToBottom();
+      }
+
+      function clearLoading() {
+        if (loadingBubble) {
+          loadingBubble.remove();
+          loadingBubble = null;
         }
+      }
 
-        askBtn.disabled = true;
-        answerBox.textContent = "Thinking...";
+      function setSendingState(isSending) {
+        sendBtn.disabled = isSending;
+        questionInput.disabled = isSending;
+      }
+
+      async function sendMessage() {
+        const question = questionInput.value.trim();
+        if (!question) return;
+
+        addMessage("user", question);
+        questionInput.value = "";
+        autoResizeInput();
+        setSendingState(true);
+        showLoading();
 
         try {
-          const response = await fetch("http://127.0.0.1:8000/ask", {
+          const response = await fetch(API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question }),
           });
 
+          clearLoading();
+
           if (!response.ok) {
-            const err = await response.text();
-            answerBox.textContent = `API error: ${err}`;
+            const errText = await response.text();
+            addMessage("assistant", `API error: ${errText}`);
             return;
           }
 
           const data = await response.json();
-          answerBox.textContent = data.answer || "No answer returned.";
+          addMessage("assistant", data.answer || "No answer returned.");
         } catch (error) {
-          answerBox.textContent = `Connection error: ${error.message}`;
+          clearLoading();
+          addMessage("assistant", `Connection error: ${error.message}`);
         } finally {
-          askBtn.disabled = false;
+          setSendingState(false);
+          questionInput.focus();
+        }
+      }
+
+      sendBtn.addEventListener("click", sendMessage);
+      newChatBtn.addEventListener("click", () => {
+        conversation.length = 0;
+        messagesEl.innerHTML = "";
+        clearLoading();
+        renderWelcome();
+        questionInput.focus();
+      });
+
+      questionInput.addEventListener("input", autoResizeInput);
+      questionInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          sendMessage();
         }
       });
+
+      renderWelcome();
+      autoResizeInput();
+      questionInput.focus();
     </script>
   </body>
 </html>

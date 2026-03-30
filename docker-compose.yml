@@ -1,0 +1,60 @@
+# Django (web) + PostgreSQL + Ollama. Existing RAG code is used via chatbot.views -> backend.api.
+#
+# After first boot, pull a model into Ollama (must match OLLAMA_MODEL), e.g.:
+#   docker compose exec ollama ollama pull tinyllama
+#
+# Optional: local GGUF instead of Ollama — unset OLLAMA_* in compose and set MODEL_PATH + mount the file.
+
+services:
+  web:
+    build: .
+    ports:
+      # Host port 8000 is often occupied by another backend service.
+      # Keep container port 8000 as-is, expose it on 8001.
+      - "8001:8000"
+    environment:
+      DJANGO_SETTINGS_MODULE: acu_chatbot.settings
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-docker-change-me}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-*}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-tinyllama}
+      POSTGRES_DB: ${POSTGRES_DB:-acibadem}
+      POSTGRES_USER: ${POSTGRES_USER:-acibadem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-acibadem}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    volumes:
+      - ./data:/app/data:ro
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-acibadem}
+      POSTGRES_USER: ${POSTGRES_USER:-acibadem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-acibadem}
+    ports:
+      - "${POSTGRES_EXPOSE_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  postgres_data:
+  ollama_data:

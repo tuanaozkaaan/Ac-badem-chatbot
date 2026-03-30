@@ -25,7 +25,7 @@ def get_rag() -> RAGSystem:
     return _rag_system
 
 
-def init_rag(model_path: str) -> None:
+def init_rag(model_path: str | None = None) -> None:
     global _rag_system
     llm = LocalLLM(model_path=model_path)
     rag = RAGSystem(llm=llm, config=RAGConfig())

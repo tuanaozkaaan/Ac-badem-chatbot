@@ -1,6 +1,9 @@
 faiss-cpu
 numpy
 sentence-transformers
-llama-cpp-python
 fastapi
 uvicorn
+httpx
+django>=4.2,<6
+psycopg2-binary
+django-cors-headers

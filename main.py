@@ -1,6 +1,6 @@
 import argparse
 
-from model.local_llm import LocalLLM
+from model.local_llm import LocalLLM, _ollama_configured
 from rag.pipeline import RAGConfig, RAGSystem
 
 
@@ -9,8 +9,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=str,
-        required=True,
-        help="Path to local GGUF model file (for llama.cpp).",
+        default=None,
+        help="Path to local GGUF model file (not needed if Ollama env vars are set).",
     )
     parser.add_argument(
         "--question",
@@ -23,6 +23,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if not _ollama_configured() and not args.model_path:
+        raise SystemExit(
+            "Provide --model-path to a GGUF file, or set OLLAMA_BASE_URL and OLLAMA_MODEL."
+        )
 
     llm = LocalLLM(model_path=args.model_path)
     config = RAGConfig()
