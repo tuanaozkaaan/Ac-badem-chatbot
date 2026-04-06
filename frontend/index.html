@@ -448,8 +448,15 @@
           clearLoading();
 
           if (!response.ok) {
-            const errText = await response.text();
-            addMessage("assistant", `API error: ${errText}`);
+            let errMessage = `HTTP ${response.status}`;
+            const rawError = await response.text();
+            try {
+              const errJson = JSON.parse(rawError || "{}");
+              errMessage = errJson.detail || errJson.error || errMessage;
+            } catch (_e) {
+              errMessage = (rawError || errMessage).slice(0, 300);
+            }
+            addMessage("assistant", `API error: ${errMessage}`);
             return;
           }
 

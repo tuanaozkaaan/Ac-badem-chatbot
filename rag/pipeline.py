@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import List
 
 from model.local_llm import LocalLLM
-from rag.document_loader import load_text_documents
+from rag.document_loader import load_chunks_from_db, load_text_documents
 from rag.embedding_store import VectorStore, build_faiss_index, embed_query, search_top_k
 from rag.text_splitter import split_into_chunks
 
@@ -10,6 +10,7 @@ from rag.text_splitter import split_into_chunks
 @dataclass
 class RAGConfig:
     data_dir: str = "data"
+    prefer_db_chunks: bool = True
     embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     top_k: int = 3
     max_distance_threshold: float = 1.2
@@ -22,8 +23,15 @@ class RAGSystem:
         self.store: VectorStore | None = None
 
     def build_knowledge_base(self) -> None:
-        docs = load_text_documents(self.config.data_dir)
-        chunks = split_into_chunks(docs)
+        chunks: List[str] = []
+
+        if self.config.prefer_db_chunks:
+            chunks = load_chunks_from_db()
+
+        if not chunks:
+            docs = load_text_documents(self.config.data_dir)
+            chunks = split_into_chunks(docs)
+
         self.store = build_faiss_index(
             chunks=chunks, embedding_model_name=self.config.embedding_model_name
         )

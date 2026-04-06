@@ -17,3 +17,18 @@ def load_text_documents(data_dir: str) -> List[str]:
     if not documents:
         raise ValueError(f"No .txt documents found in: {data_dir}")
     return documents
+
+
+def load_chunks_from_db() -> List[str]:
+    """
+    Load chunked knowledge directly from PostgreSQL (PageChunk table).
+    Returns empty list if Django ORM is unavailable or no chunks exist.
+    """
+    try:
+        from chatbot.models import PageChunk
+    except Exception:
+        return []
+
+    rows = PageChunk.objects.order_by("id").values_list("chunk_text", flat=True)
+    chunks = [text.strip() for text in rows if text and text.strip()]
+    return chunks

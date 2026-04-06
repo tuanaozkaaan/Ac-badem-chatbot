@@ -24,3 +24,41 @@ class ScrapedPage(models.Model):
 
     def __str__(self) -> str:
         return f"{self.source_type}: {self.url}"
+
+
+class PageChunk(models.Model):
+    scraped_page = models.ForeignKey(
+        ScrapedPage,
+        on_delete=models.CASCADE,
+        related_name="chunks",
+        db_index=True,
+    )
+    chunk_index = models.PositiveIntegerField()
+    chunk_text = models.TextField()
+    chunk_hash = models.CharField(max_length=64, db_index=True)
+    page_content_hash = models.CharField(max_length=64, db_index=True)
+
+    # Denormalized metadata for easier retrieval filtering/debugging.
+    title = models.CharField(max_length=512, blank=True)
+    section = models.CharField(max_length=256, blank=True)
+    source_type = models.CharField(max_length=16, choices=ScrapedPage.SOURCE_CHOICES, db_index=True)
+    url = models.URLField(max_length=1024, db_index=True)
+    char_count = models.PositiveIntegerField(default=0)
+    token_count_estimate = models.PositiveIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("scraped_page_id", "chunk_index")
+        constraints = [
+            models.UniqueConstraint(fields=["scraped_page", "chunk_index"], name="uniq_page_chunk_index"),
+            models.UniqueConstraint(fields=["scraped_page", "chunk_hash"], name="uniq_page_chunk_hash"),
+        ]
+        indexes = [
+            models.Index(fields=["source_type", "section"]),
+            models.Index(fields=["url"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"PageChunk(page_id={self.scraped_page_id}, idx={self.chunk_index})"
