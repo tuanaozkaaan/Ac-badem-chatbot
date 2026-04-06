@@ -1,21 +1,26 @@
-# Main web: Django (acu_chatbot) wrapping the existing RAG module; FastAPI code remains in backend/ for optional use.
+# Main web: Django (acu_chatbot) wrapping the existing RAG module.
 FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    DJANGO_SETTINGS_MODULE=acu_chatbot.settings
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+RUN apt-get update --fix-missing \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY . .
+COPY . /app
+RUN chmod +x /app/docker/entrypoint.sh
 
-ENV PYTHONUNBUFFERED=1
-ENV DJANGO_SETTINGS_MODULE=acu_chatbot.settings
 EXPOSE 8000
-
-RUN chmod +x docker/entrypoint.sh
-
-ENTRYPOINT ["docker/entrypoint.sh"]
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
