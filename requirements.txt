@@ -1,9 +1,10 @@
-faiss-cpu
 numpy
-sentence-transformers
 fastapi
 uvicorn
 httpx
 django>=4.2,<6
 psycopg2-binary
 django-cors-headers
+requests
+beautifulsoup4
+lxml

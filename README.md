@@ -102,3 +102,33 @@ python -m http.server 5500 --directory frontend
 - You can add more local files into `data/` to improve answer quality.
 - The fallback sentence is:
   `The requested information is not available in the provided context.`
+
+## Responsible Data Ingestion (New)
+
+This project now includes a production-oriented ingestion pipeline for Acibadem public pages:
+
+- Respects `robots.txt` for each domain
+- Crawls only allowed public pages under:
+  - `https://www.acibadem.edu.tr`
+  - `https://obs.acibadem.edu.tr`
+- Uses request delays (`1-2` seconds by default), max page cap, visited URL tracking, and duplicate prevention
+- Cleans noisy HTML (nav/header/footer/boilerplate) and stores normalized content in PostgreSQL
+- Supports optional Playwright fallback for JS-heavy OBS pages
+
+Run ingestion:
+
+```bash
+python manage.py ingest_acibadem --max-pages 150 --min-delay 1 --max-delay 2 --log-level INFO
+```
+
+Optional Playwright fallback:
+
+```bash
+python manage.py ingest_acibadem --enable-playwright-obs
+```
+
+Docker run:
+
+```bash
+docker compose exec web python manage.py ingest_acibadem --max-pages 150
+```
