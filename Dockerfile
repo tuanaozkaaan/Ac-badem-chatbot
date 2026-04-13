@@ -1,6 +1,7 @@
-# Main web: Django (acu_chatbot) wrapping the existing RAG module.
+# Temel imaj
 FROM python:3.11-slim-bookworm
 
+# Çevresel değişkenler
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -8,9 +9,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# --- KRİTİK ADIM: AI KÜTÜPHANELERİ İÇİN SİSTEM ARAÇLARI ---
+# Bu satır eksik olduğu için derleme hatası alıyorsun
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
+# Bağımlılıkları kopyala
+COPY requirements.txt /app/requirements.txt
+
+# Zaman aşımını artırarak kur
+RUN pip install --upgrade pip && \
+    pip install --default-timeout=1000 --no-cache-dir -r /app/requirements.txt
+
+# Proje dosyalarını kopyala
 COPY . /app
 RUN chmod +x /app/docker/entrypoint.sh
 
