@@ -58,6 +58,67 @@ pip install -r requirements.txt
 
 3. Download a local GGUF model (example: TinyLlama or Mistral instruct GGUF) and note its path.
 
+## PostgreSQL (Local Dev)
+
+This project uses **PostgreSQL** (not SQLite). Database config is read from environment variables:
+
+- `POSTGRES_HOST` (default: `localhost`)
+- `POSTGRES_PORT` (default: `5432`)
+- `POSTGRES_DB` (default: `acibadem`)
+- `POSTGRES_USER` (default: `acibadem`)
+- `POSTGRES_PASSWORD` (default: `acibadem`)
+
+If you see:
+
+`OperationalError: ... FATAL: role "acibadem" does not exist`
+
+it means the configured Postgres user/role is missing in the Postgres instance you are connecting to.
+
+### Option A (recommended): use Docker Postgres from `docker-compose.yml`
+
+The `db` service is exposed on host port **5433** by default.
+
+```bash
+docker compose up -d db
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5433
+export POSTGRES_DB=acibadem
+export POSTGRES_USER=acibadem
+export POSTGRES_PASSWORD=acibadem
+python3 manage.py migrate
+```
+
+### Option B: use your local Postgres (port 5432)
+
+Create the role + database (adjust password if you want):
+
+```bash
+psql postgres -c "CREATE ROLE acibadem WITH LOGIN PASSWORD 'acibadem' CREATEDB;"
+psql postgres -c "CREATE DATABASE acibadem OWNER acibadem;"
+```
+
+Then run migrations:
+
+```bash
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5432
+export POSTGRES_DB=acibadem
+export POSTGRES_USER=acibadem
+export POSTGRES_PASSWORD=acibadem
+python3 manage.py migrate
+```
+
+### Quick test
+
+```bash
+python3 manage.py shell
+```
+
+```python
+from chatbot.models import ScrapedPage, PageChunk
+ScrapedPage.objects.count(), PageChunk.objects.count()
+```
+
 ## Run
 
 ### CLI (existing)
