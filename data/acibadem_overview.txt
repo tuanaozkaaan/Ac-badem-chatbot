@@ -1,7 +1,7 @@
 Acibadem University is a foundation university located in Istanbul, Turkey.
 The university was established in 2007 and started its educational activities in 2009.
 Its main campus is in Atasehir, Istanbul.
-
+Professor Ahmet Bulut is the Head of the Computer Engineering Department at the university.
 The university has a strong focus on health sciences, medicine, engineering, and life sciences.
 It is supported by the Acibadem Healthcare Group.
 
