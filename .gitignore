@@ -5,6 +5,7 @@ env/
 
 # Python
 __pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 *.so
@@ -57,5 +58,3 @@ Thumbs.db
 
 # Model weights (large files)
 *.gguf
-
-__pycache__/
