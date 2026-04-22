@@ -57,3 +57,5 @@ Thumbs.db
 
 # Model weights (large files)
 *.gguf
+
+__pycache__/
