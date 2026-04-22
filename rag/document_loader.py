@@ -1,5 +1,22 @@
+from __future__ import annotations
+
+import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List
+
+import numpy as np
+
+# Must match RAGConfig.embedding_model_name and create_embeddings / ChunkEmbedding default.
+EXPECTED_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+@dataclass
+class LoadedDbChunk:
+    """One knowledge chunk from DB with optional precomputed embedding (ChunkEmbedding)."""
+
+    chunk_text: str
+    vector: np.ndarray | None  # 1D float32 when present; matches JSON-stored list from create_embeddings
 
 
 def load_text_documents(data_dir: str) -> List[str]:
@@ -19,16 +36,78 @@ def load_text_documents(data_dir: str) -> List[str]:
     return documents
 
 
-def load_chunks_from_db() -> List[str]:
+def load_chunks_from_db() -> List[LoadedDbChunk]:
     """
-    Load chunked knowledge directly from PostgreSQL (PageChunk table).
-    Returns empty list if Django ORM is unavailable or no chunks exist.
+    Load rows from ChunkEmbedding: chunk_text from related PageChunk, vector from JSON.
+    Only includes rows with non-empty text and a usable vector (precomputed in DB).
     """
+    print("DEBUG: load_chunks_from_db: starting (ChunkEmbedding + PageChunk chunk_text)")
+
     try:
-        from chatbot.models import PageChunk
-    except Exception:
+        from chatbot.models import ChunkEmbedding
+    except Exception as e:
+        print(f"DEBUG: load_chunks_from_db: django model import failed: {e!r}")
+        traceback.print_exc()
         return []
 
-    rows = PageChunk.objects.order_by("id").values_list("chunk_text", flat=True)
-    chunks = [text.strip() for text in rows if text and text.strip()]
-    return chunks
+    try:
+        from django.db import connection
+
+        connection.ensure_connection()
+    except Exception as e:
+        print(f"DEBUG: load_chunks_from_db: DB connection check failed: {e!r}")
+        traceback.print_exc()
+        return []
+
+    try:
+        base_qs = ChunkEmbedding.objects.select_related("chunk").order_by("id")
+        table_count = ChunkEmbedding.objects.count()
+        print(
+            f"DEBUG: load_chunks_from_db: ChunkEmbedding table readable, total rows: {table_count}"
+        )
+    except Exception as e:
+        print(f"DEBUG: load_chunks_from_db: cannot query ChunkEmbedding: {e!r}")
+        traceback.print_exc()
+        return []
+
+    rows: list[LoadedDbChunk] = []
+    model_mismatch = 0
+    empty_text = 0
+    missing_vector = 0
+
+    try:
+        for emb in base_qs.iterator(chunk_size=500):
+            text = (emb.chunk.chunk_text or "").strip() if emb.chunk else ""
+            if not text:
+                empty_text += 1
+                continue
+            if emb.vector is None:
+                missing_vector += 1
+                continue
+            arr = np.asarray(emb.vector, dtype=np.float32)
+            if len(arr.shape) == 0:
+                missing_vector += 1
+                continue
+            if len(arr.shape) > 1:
+                arr = arr.ravel()
+            name = (emb.embedding_model or "").strip()
+            if name and name != EXPECTED_EMBEDDING_MODEL:
+                model_mismatch += 1
+            rows.append(LoadedDbChunk(chunk_text=text, vector=arr))
+    except Exception as e:
+        print(f"DEBUG: load_chunks_from_db: iteration / row build failed: {e!r}")
+        traceback.print_exc()
+        return []
+
+    print(
+        f"DEBUG: load_chunks_from_db: loaded {len(rows)} text+vector pairs from DB "
+        f"(empty_text_skipped={empty_text}, missing_vector={missing_vector}, "
+        f"rows_with_embedding_model_mismatch={model_mismatch}, expected_model={EXPECTED_EMBEDDING_MODEL!r})"
+    )
+    if model_mismatch:
+        print(
+            "DEBUG: load_chunks_from_db: WARNING: some rows use a different "
+            f"embedding_model than {EXPECTED_EMBEDDING_MODEL!r}; consider re-embedding for best recall."
+        )
+
+    return rows

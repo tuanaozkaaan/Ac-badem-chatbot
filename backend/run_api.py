@@ -23,7 +23,7 @@ def main() -> None:
     args = parse_args()
     if not _ollama_configured() and not args.model_path:
         raise SystemExit(
-            "Provide --model-path to a GGUF file, or set OLLAMA_BASE_URL and OLLAMA_MODEL."
+            "Provide --model-path to a GGUF file, or set OLLAMA_BASE_URL (OLLAMA_MODEL defaults to gemma2:2b)."
         )
     init_rag(model_path=args.model_path)
     uvicorn.run("backend.api:app", host=args.host, port=args.port, reload=False)

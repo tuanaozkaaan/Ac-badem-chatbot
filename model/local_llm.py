@@ -1,11 +1,20 @@
+import logging
 import os
 from pathlib import Path
+
+DEFAULT_OLLAMA_MODEL = "gemma2:2b"
+
+logger = logging.getLogger(__name__)
 
 
 def _ollama_configured() -> bool:
     base = os.environ.get("OLLAMA_BASE_URL", "").strip()
+    return bool(base)
+
+
+def _get_ollama_model() -> str:
     model = os.environ.get("OLLAMA_MODEL", "").strip()
-    return bool(base and model)
+    return model or DEFAULT_OLLAMA_MODEL
 
 
 class LocalLLM:
@@ -20,13 +29,24 @@ class LocalLLM:
         self._use_ollama = _ollama_configured()
         if self._use_ollama:
             self._ollama_base = os.environ["OLLAMA_BASE_URL"].strip().rstrip("/")
-            self._ollama_model = os.environ["OLLAMA_MODEL"].strip()
+            self._ollama_model = _get_ollama_model()
             self.llm = None
+            logger.info(
+                "LocalLLM: Ollama mode — base_url=%r, model=%r",
+                self._ollama_base,
+                self._ollama_model,
+            )
+            # Ensures docker logs show the resolved URL even if logging is not configured.
+            _gen = f"{self._ollama_base}/api/generate"
+            print(
+                f"DEBUG: LocalLLM: Ollama OLLAMA_BASE_URL={self._ollama_base!r}, "
+                f"OLLAMA_MODEL={self._ollama_model!r}, generate endpoint={_gen!r}"
+            )
             return
 
         if not model_path:
             raise ValueError(
-                "model_path is required unless OLLAMA_BASE_URL and OLLAMA_MODEL are set."
+                "model_path is required unless OLLAMA_BASE_URL is set."
             )
 
         path = Path(model_path)
@@ -43,7 +63,7 @@ class LocalLLM:
         except ImportError as exc:
             raise RuntimeError(
                 "llama-cpp-python is not installed. Install it to use GGUF local inference, "
-                "or configure OLLAMA_BASE_URL and OLLAMA_MODEL to use Ollama."
+                "or configure OLLAMA_BASE_URL to use Ollama."
             ) from exc
 
         self.llm = Llama(
@@ -64,11 +84,50 @@ class LocalLLM:
                 "stream": False,
                 "options": {"temperature": temperature, "num_predict": max_tokens},
             }
-            with httpx.Client(timeout=300.0) as client:
-                response = client.post(url, json=payload)
+            try:
+                with httpx.Client(timeout=300.0) as client:
+                    response = client.post(url, json=payload)
                 response.raise_for_status()
-            data = response.json()
-            return (data.get("response") or "").strip()
+            except httpx.HTTPStatusError as exc:
+                full_body = exc.response.text or ""
+                err_text = (
+                    f"Ollama HTTP {exc.response.status_code} for POST {url!r} "
+                    f"(OLLAMA_BASE_URL={self._ollama_base!r}, model={self._ollama_model!r}). "
+                    f"Response body:\n{full_body}"
+                )
+                logger.error("%s", err_text, exc_info=True)
+                print(f"ERROR: LocalLLM Ollama: {err_text}", flush=True)
+                return ""
+            except httpx.RequestError as exc:
+                err_text = (
+                    f"Ollama request failed for {url!r} (OLLAMA_BASE_URL={self._ollama_base!r}, "
+                    f"model={self._ollama_model!r}): {type(exc).__name__}: {exc!r}"
+                )
+                logger.error("%s", err_text, exc_info=True)
+                print(f"ERROR: LocalLLM Ollama: {err_text}", flush=True)
+                return ""
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raw = response.text
+                err_text = (
+                    f"Ollama response was not valid JSON for {url!r}. Parse error: {exc!r}. "
+                    f"Raw body (first 8000 chars): {raw[:8000]!r}"
+                )
+                logger.error("%s", err_text, exc_info=True)
+                print(f"ERROR: LocalLLM Ollama: {err_text}", flush=True)
+                return ""
+            text = (data.get("response") or "").strip()
+            if not text:
+                err_text = (
+                    f"Ollama returned empty 'response' from {url!r} "
+                    f"(OLLAMA_BASE_URL={self._ollama_base!r}, model={self._ollama_model!r}). "
+                    f"Full JSON: {data!r}"
+                )
+                logger.error("%s", err_text)
+                print(f"ERROR: LocalLLM Ollama: {err_text}", flush=True)
+                return ""
+            return text
 
         output = self.llm(
             prompt,
