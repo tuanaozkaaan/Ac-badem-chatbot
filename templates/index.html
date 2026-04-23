@@ -357,7 +357,8 @@
     </div>
 
     <script>
-      const API_URL = "http://127.0.0.1:8001/ask";
+      // Same-origin by default so it works with both runserver and Docker port mappings.
+      const API_URL = "/ask";
       const messagesEl = document.getElementById("messages");
       const messagesWrapEl = document.getElementById("messagesWrap");
       const welcomeEl = document.getElementById("welcome");

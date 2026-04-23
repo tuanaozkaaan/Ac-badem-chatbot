@@ -10,4 +10,5 @@ beautifulsoup4
 lxml
 sentence-transformers
 faiss-cpu
+python-dotenv
 #llama-cpp-python

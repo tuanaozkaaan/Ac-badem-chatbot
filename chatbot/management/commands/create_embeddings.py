@@ -23,13 +23,30 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("Eski embeddingler temizleniyor..."))
             ChunkEmbedding.objects.all().delete()
 
+        pagechunk_total = PageChunk.objects.count()
+        embedding_total = ChunkEmbedding.objects.count()
+
         # Sadece embedding'i olmayan chunk'ları al
         existing_chunk_ids = ChunkEmbedding.objects.values_list('chunk_id', flat=True)
         chunks_to_process = PageChunk.objects.exclude(id__in=existing_chunk_ids).order_by('id')
         
         total = chunks_to_process.count()
         if total == 0:
-            self.stdout.write(self.style.SUCCESS("İşlenecek yeni veri bulunamadı."))
+            self.stdout.write(
+                self.style.SUCCESS(
+                    "İşlenecek yeni veri bulunamadı. "
+                    f"(PageChunk toplam={pagechunk_total}, ChunkEmbedding toplam={embedding_total})"
+                )
+            )
+            if pagechunk_total == 0:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "PageChunk tablosu boş. Önce kaynak veriyi içeri aktarın:\n"
+                        "  - Lokal .txt dosyaları: python manage.py ingest_txt_data --data-dir ./data\n"
+                        "  - Web crawl: python manage.py ingest_acibadem --max-pages 150\n"
+                        "Sonra tekrar çalıştırın: python manage.py create_embeddings"
+                    )
+                )
             return
 
         self.stdout.write(self.style.NOTICE(f"{total} parça veri vektörleştiriliyor..."))
