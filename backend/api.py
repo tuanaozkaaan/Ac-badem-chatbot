@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -16,6 +18,7 @@ class AskResponse(BaseModel):
 app = FastAPI(title="Acibadem RAG API", version="0.1.0")
 
 _rag_system: RAGSystem | None = None
+DEFAULT_OLLAMA_MODEL = "gemma2:2b"
 
 
 def get_rag() -> RAGSystem:
@@ -27,6 +30,8 @@ def get_rag() -> RAGSystem:
 
 def init_rag(model_path: str | None = None) -> None:
     global _rag_system
+    if os.environ.get("OLLAMA_BASE_URL", "").strip() and not os.environ.get("OLLAMA_MODEL", "").strip():
+        os.environ["OLLAMA_MODEL"] = DEFAULT_OLLAMA_MODEL
     llm = LocalLLM(model_path=model_path)
     rag = RAGSystem(llm=llm, config=RAGConfig())
     rag.build_knowledge_base()

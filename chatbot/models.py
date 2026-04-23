@@ -62,3 +62,21 @@ class PageChunk(models.Model):
 
     def __str__(self) -> str:
         return f"PageChunk(page_id={self.scraped_page_id}, idx={self.chunk_index})"
+
+
+class ChunkEmbedding(models.Model):
+    chunk = models.OneToOneField(
+        PageChunk,
+        on_delete=models.CASCADE,
+        related_name="embedding_data",
+        db_index=True,
+    )
+    # Vektörleri JSON formatında (liste olarak) saklayacağız
+    vector = models.JSONField() 
+    embedding_model = models.CharField(max_length=255, default="sentence-transformers/all-MiniLM-L6-v2")
+    embedding_dim = models.PositiveIntegerField()
+    chunk_hash = models.CharField(max_length=64, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"Embedding for Chunk {self.chunk_id}"

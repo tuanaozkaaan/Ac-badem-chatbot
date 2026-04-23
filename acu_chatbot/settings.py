@@ -13,6 +13,10 @@ DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
 
+# Ollama: docker-compose sets OLLAMA_BASE_URL=http://ollama:11434 (Compose service DNS name).
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma2:2b")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

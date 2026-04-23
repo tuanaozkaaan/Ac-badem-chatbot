@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import faiss
 import numpy as np
@@ -13,17 +13,72 @@ class VectorStore:
     embedding_model_name: str
 
 
-def build_faiss_index(
-    chunks: List[str], embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
-) -> VectorStore:
-    """Create embeddings for chunks and store them in a FAISS index."""
-    model = SentenceTransformer(embedding_model_name)
-    embeddings = model.encode(chunks, convert_to_numpy=True, normalize_embeddings=True)
+def complete_embedding_matrix(
+    chunks: List[str],
+    per_row: Sequence[Optional[np.ndarray]],
+    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+) -> np.ndarray:
+    """
+    Build a (n, dim) matrix: use precomputed row vectors when present, encode missing
+    rows with the same model settings as the encode-all path (normalize_embeddings=True).
+    """
+    if len(chunks) != len(per_row):
+        raise ValueError("chunks and per_row must have the same length")
 
-    embeddings = embeddings.astype(np.float32)
+    n = len(chunks)
+    missing_idx = [i for i in range(n) if per_row[i] is None]
+    if not missing_idx:
+        return np.stack([per_row[i] for i in range(n)]).astype(np.float32)  # type: ignore[list-item]
+
+    if not any(p is not None for p in per_row):
+        model = SentenceTransformer(embedding_model_name)
+        return model.encode(chunks, convert_to_numpy=True, normalize_embeddings=True).astype(
+            np.float32
+        )
+
+    sample = next(p for p in per_row if p is not None)
+    dim = int(sample.shape[0])
+    out = np.zeros((n, dim), dtype=np.float32)
+    for i in range(n):
+        v = per_row[i]
+        if v is not None:
+            out[i] = v.astype(np.float32, copy=False)
+
+    model = SentenceTransformer(embedding_model_name)
+    to_encode = [chunks[i] for i in missing_idx]
+    encoded = model.encode(to_encode, convert_to_numpy=True, normalize_embeddings=True)
+    for j, i in enumerate(missing_idx):
+        out[i] = encoded[j].astype(np.float32, copy=False)
+    return out
+
+
+def build_faiss_index(
+    chunks: List[str],
+    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    precomputed_vectors: Optional[np.ndarray] = None,
+) -> VectorStore:
+    """
+    Create a FAISS L2 index for chunks. If precomputed_vectors is set (n, dim) float32,
+    they are used as-is (no model.encode for chunks). Otherwise chunks are embedded.
+    """
+    if not chunks and precomputed_vectors is not None and len(precomputed_vectors):
+        raise ValueError("precomputed_vectors provided but chunks list is empty")
+    if precomputed_vectors is not None:
+        embeddings = np.asarray(precomputed_vectors, dtype=np.float32, order="C")
+    else:
+        model = SentenceTransformer(embedding_model_name)
+        embeddings = model.encode(chunks, convert_to_numpy=True, normalize_embeddings=True)
+        embeddings = embeddings.astype(np.float32)
+
+    if len(embeddings.shape) == 1:
+        embeddings = embeddings.reshape(1, -1)
+    if precomputed_vectors is not None and len(chunks) != len(embeddings):
+        raise ValueError("chunks and precomputed_vectors row counts must match")
+
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
-    index.add(embeddings)
+    if embeddings.shape[0] > 0:
+        index.add(embeddings)
 
     return VectorStore(index=index, chunks=chunks, embedding_model_name=embedding_model_name)
 

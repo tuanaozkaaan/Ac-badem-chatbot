@@ -1,7 +1,7 @@
 # Django (web) + PostgreSQL + Ollama. Existing RAG code is used via chatbot.views -> backend.api.
 #
 # After first boot, pull a model into Ollama (must match OLLAMA_MODEL), e.g.:
-#   docker compose exec ollama ollama pull tinyllama
+#   docker compose exec ollama ollama pull gemma2:2b
 #
 # Optional: local GGUF instead of Ollama — unset OLLAMA_* in compose and set MODEL_PATH + mount the file.
 
@@ -18,10 +18,10 @@ services:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-*}
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-tinyllama}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma2:2b}
       POSTGRES_DB: ${POSTGRES_DB:-acibadem}
       POSTGRES_USER: ${POSTGRES_USER:-acibadem}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-acibadem}
+      POSTGRES_PASSWORD: acibadem
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
     depends_on:
