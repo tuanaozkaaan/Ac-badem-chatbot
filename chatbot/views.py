@@ -65,6 +65,110 @@ def _looks_acibadem_related(question: str) -> bool:
     )
 
 
+def _detect_language(question: str) -> str:
+    """
+    Heuristic language detection for TR vs EN.
+    Returns: "tr" or "en"
+    """
+    q = (question or "").strip().lower()
+    if not q:
+        return "tr"
+
+    # Turkish-specific characters are a strong signal.
+    if any(ch in q for ch in ("ç", "ğ", "ı", "ö", "ş", "ü")):
+        return "tr"
+
+    tr_markers = {
+        "mı",
+        "mi",
+        "mu",
+        "mü",
+        "nedir",
+        "nerede",
+        "nasıl",
+        "nasil",
+        "kimdir",
+        "hangisi",
+        "anlat",
+        "fakülte",
+        "fakulte",
+        "bölüm",
+        "bolum",
+        "üniversite",
+        "universite",
+        "adres",
+        "ulaşım",
+        "ulasim",
+    }
+    en_markers = {
+        "what",
+        "where",
+        "how",
+        "who",
+        "tell",
+        "explain",
+        "faculty",
+        "department",
+        "university",
+        "address",
+        "campus",
+        "admission",
+        "apply",
+    }
+
+    tokens = set(q.replace("?", " ").replace(".", " ").replace(",", " ").split())
+    if tokens & tr_markers:
+        return "tr"
+    if tokens & en_markers:
+        return "en"
+
+    # Default: Turkish (project is TR-first).
+    return "tr"
+
+
+def _looks_turkish(text: str) -> bool:
+    t = (text or "").lower()
+    if not t:
+        return False
+    if any(ch in t for ch in ("ç", "ğ", "ı", "ö", "ş", "ü")):
+        return True
+    # Common Turkish function words
+    tr_words = (" ve ", " ile ", " için ", " adres", " üniversite", " kampüs", " istanbul", " türkiye", " nedir", " nerede")
+    hits = sum(1 for w in tr_words if w in f" {t} ")
+    return hits >= 2
+
+
+def _looks_english(text: str) -> bool:
+    t = (text or "").lower()
+    if not t:
+        return False
+    en_words = (" the ", " and ", " address", " university", " campus", " contact", " located", " is ")
+    hits = sum(1 for w in en_words if w in f" {t} ")
+    return hits >= 2
+
+
+def _translate_answer(answer: str, target_lang: str) -> str:
+    """
+    Translate an already-produced answer to the target language ("tr" or "en").
+    Must preserve meaning and avoid adding new facts.
+    """
+    if target_lang not in ("tr", "en"):
+        return answer
+    if not (answer or "").strip():
+        return answer
+    to_label = "Turkish" if target_lang == "tr" else "English"
+    prompt = f"""Translate the text below to {to_label}.
+Rules:
+- Preserve meaning exactly.
+- Do not add any new information.
+- Output only the translation (no quotes, no extra text).
+
+Text:
+{answer}
+"""
+    translated = ask_gemma(prompt)
+    return (translated or "").strip() or answer
+
 def _extract_keywords(question: str) -> list[str]:
     tokens = [
         t.strip(".,!?;:()[]{}\"'").lower()
@@ -424,6 +528,14 @@ def ask(request):
         return JsonResponse({"detail": "Question cannot be empty."}, status=400)
 
     try:
+        lang = _detect_language(question)
+        is_tr = lang == "tr"
+        no_info_msg = (
+            "Bu konuda elimde net bir bilgi bulunamadı."
+            if is_tr
+            else "I couldn't find clear information about this."
+        )
+
         q_lower = question.lower()
         address_intent = any(
             t in q_lower
@@ -445,15 +557,31 @@ def ask(request):
         # If we cannot retrieve any relevant context and the query doesn't look on-topic,
         # avoid hallucinations by refusing politely.
         if not context and not _looks_acibadem_related(question):
-            return JsonResponse({"answer": "Ben Acıbadem Üniversitesi odaklı bir asistanım."})
+            return JsonResponse(
+                {
+                    "answer": (
+                        "Ben Acıbadem Üniversitesi odaklı bir asistanım."
+                        if is_tr
+                        else "I'm an assistant focused on Acibadem University."
+                    )
+                }
+            )
 
         if not context:
             return JsonResponse(
                 {
                     "answer": (
-                        "Bu konuda güvenilir bilgi bulamadım. "
-                        "Veritabanımda ilgili içerik yoksa uydurma bilgi veremem. "
-                        "Resmî web sitesindeki İletişim/Ulaşım bölümünden doğrulayabilirsin."
+                        (
+                            "Bu konuda güvenilir bilgi bulamadım. "
+                            "Veritabanımda ilgili içerik yoksa uydurma bilgi veremem. "
+                            "Resmî web sitesindeki İletişim/Ulaşım bölümünden doğrulayabilirsin."
+                        )
+                        if is_tr
+                        else (
+                            "I couldn't find reliable information in my data. "
+                            "If it's not in my database, I can't make it up. "
+                            "Please verify on the official website's Contact/Transportation pages."
+                        )
                     )
                 }
             )
@@ -487,9 +615,17 @@ def ask(request):
                 return JsonResponse(
                     {
                         "answer": (
-                            "Adres/konum bilgisini veritabanımda net olarak bulamadım. "
-                            "Yanlış bilgi vermemek için tahmin edemiyorum. "
-                            "Resmî web sitesindeki İletişim/Ulaşım sayfasından kontrol edebilirsin."
+                            (
+                                "Adres/konum bilgisini veritabanımda net olarak bulamadım. "
+                                "Yanlış bilgi vermemek için tahmin edemiyorum. "
+                                "Resmî web sitesindeki İletişim/Ulaşım sayfasından kontrol edebilirsin."
+                            )
+                            if is_tr
+                            else (
+                                "I couldn't find a clear address/location in my database. "
+                                "To avoid giving wrong information, I can't guess. "
+                                "Please check the official website's Contact/Transportation page."
+                            )
                         )
                     }
                 )
@@ -499,14 +635,36 @@ def ask(request):
         if len(context) > max_context_chars:
             context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
 
+        answer_language_instruction = "Türkçe" if is_tr else "English"
+
         prompt = f"""
-Sen Acıbadem Üniversitesi için çalışan bir yapay zeka asistanısın.
-Sadece sana verilen bağlamı kullanarak cevap ver.
-Bağlamda olmayan bilgileri uydurma.
-Eğer cevap bağlamda yoksa:
-'Bu konuda yeterli bilgi bulamadım.' de.
-Her zaman Türkçe cevap ver.
-Kısa, açık ve doğru yaz.
+You are a helpful university assistant.
+
+LANGUAGE RULES:
+- Detect the language of the user's question.
+- Always answer in the SAME language as the user’s question.
+- If the question is in English → answer in English.
+- If the question is in Turkish → answer in Turkish.
+
+RETRIEVAL RULES:
+- The context may be in Turkish or English.
+- You MUST use the context even if it is in a different language than the question.
+- If needed, translate the relevant information before answering.
+
+ANSWERING RULES:
+- Do NOT hallucinate.
+- If the answer exists in the context, use it clearly.
+- If the context is in another language, translate it to the user’s language.
+- If no relevant information exists, say exactly:
+  - Turkish: "Bu konuda elimde net bir bilgi bulunamadı."
+  - English: "I couldn't find clear information about this."
+
+PRIORITY:
+1. Use context
+2. Translate if necessary
+3. Answer in user's language
+
+Important: The user's question language is {answer_language_instruction}. Your final answer must be in {answer_language_instruction}.
 
 Bağlam:
 {context}
@@ -519,6 +677,16 @@ Kullanıcı sorusu:
         answer = ask_gemma(prompt)
         if answer.startswith("Gemma error:"):
             return JsonResponse({"detail": answer}, status=502)
+        if not (answer or "").strip():
+            return JsonResponse({"answer": no_info_msg})
+        # Enforce answer language: if model drifts (or mixes languages), translate back
+        # without adding facts. Be strict for EN questions (UI expectation).
+        if is_tr:
+            if (not _looks_turkish(answer)) or _looks_english(answer):
+                answer = _translate_answer(answer, "tr")
+        else:
+            if (not _looks_english(answer)) or _looks_turkish(answer):
+                answer = _translate_answer(answer, "en")
         return JsonResponse({"answer": answer})
     except Exception:
         logger.exception("Failed to answer question in /ask")
