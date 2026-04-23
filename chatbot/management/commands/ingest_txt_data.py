@@ -151,10 +151,6 @@ class Command(BaseCommand):
             return
 
         with transaction.atomic():
-            # Clear existing data to avoid duplicates.
-            PageChunk.objects.all().delete()
-            ScrapedPage.objects.all().delete()
-
             files_processed = 0
             chunks_created = 0
             now = timezone.now()
@@ -170,8 +166,20 @@ class Command(BaseCommand):
                 pseudo_url = f"file://{file_path.resolve()}"
                 title = file_path.stem.replace("_", " ").strip()
                 section = "local_txt"
+                tags: list[str] = []
+                if "contact" in file_path.stem.lower():
+                    tags = ["contact", "address", "iletişim", "adres"]
+                    title = "İletişim / Adres"
+                    section = "contact_address"
+                    # Put tags up-front to increase retrieval recall.
+                    content = f"Etiketler: {', '.join(tags)}\n\n{content}"
                 source_type = ScrapedPage.SOURCE_MAIN_SITE
                 content_hash = _sha256(content)
+
+                # Upsert strategy for local files:
+                # - delete any prior ScrapedPage with same pseudo_url (cascades to chunks)
+                # - recreate with updated content/hash
+                ScrapedPage.objects.filter(url=pseudo_url).delete()
 
                 page = ScrapedPage.objects.create(
                     url=pseudo_url,
@@ -184,6 +192,9 @@ class Command(BaseCommand):
                 )
 
                 chunks = _word_chunks(content, spec=spec)
+                # For contact/address docs we want to keep the whole address together as a single chunk.
+                if tags and len(chunks) > 1:
+                    chunks = ["\n".join([c.strip() for c in chunks if c.strip()]).strip()]
                 if not chunks:
                     files_processed += 1
                     continue

@@ -46,6 +46,8 @@ _TR_STOPWORDS = {
     "universite",
     "üniversitesi",
     "universitesi",
+    "acibadem",
+    "acıbadem",
 }
 
 
@@ -103,6 +105,23 @@ def retrieve_context(question: str, k: int = 5) -> str:
     admission_intent = (not internship_intent) and any(
         t in q_lower for t in ("başvuru", "basvuru", "admission", "apply", "application")
     )
+    address_intent = any(
+        t in q_lower
+        for t in (
+            "adres",
+            "address",
+            "kampüs",
+            "kampus",
+            "campus",
+            "konum",
+            "location",
+            "ulaşım",
+            "ulasim",
+            "nerede",
+            "nasıl gid",
+            "nasil gid",
+        )
+    )
 
     admission_boost_terms = {
         "admission",
@@ -147,6 +166,30 @@ def retrieve_context(question: str, k: int = 5) -> str:
     }
 
     noisy_penalize_terms = {"duyuru", "haber", "etkinlik", "announcement", "news", "event"}
+    address_boost_terms = {
+        "adres",
+        "address",
+        "iletişim",
+        "iletisim",
+        "ulaşım",
+        "ulasim",
+        "kampüs",
+        "kampus",
+        "kampüsü",
+        "kampusu",
+        "campus",
+        "yerleşke",
+        "yerleske",
+    }
+    address_penalize_terms = {
+        # Common in program pages and tends to match "adresine" (email address) rather than campus address.
+        "referans",
+        "transkript",
+        "ales",
+        "başvuru",
+        "basvuru",
+        "application",
+    }
 
     def _count_hits(hay: str, needle: str) -> int:
         if not hay or not needle:
@@ -157,6 +200,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
         title = (row.title or "").lower()
         section = (row.section or "").lower()
         text = (row.chunk_text or "").lower()
+        url = (getattr(row, "url", None) or "").lower()
 
         score = 0
 
@@ -208,6 +252,38 @@ def retrieve_context(question: str, k: int = 5) -> str:
             if t in text:
                 score -= 8
 
+        if address_intent:
+            for t in address_boost_terms:
+                if t in title:
+                    score += 36
+                if t in section:
+                    score += 22
+                if t in text:
+                    score += 10
+
+            for t in address_penalize_terms:
+                if t in title:
+                    score -= 40
+                if t in section:
+                    score -= 24
+                if t in text:
+                    score -= 14
+
+            # Heuristic: lots of emails often means we matched "adresine" (email address).
+            email_hits = text.count("@")
+            if email_hits >= 2 and not any(x in text for x in ("kampüs", "kampus", "campus", "ataşehir", "atasehir")):
+                score -= 60
+
+            # Strongly prefer actual contact/transport pages when asking for address/location.
+            if any(p in url for p in ("/iletisim", "/contact", "/ulasim", "/adres", "/yerleske", "/kampus", "/kampus/")):
+                score += 140
+            if ("iletişim" in title) or ("iletisim" in title) or ("contact" in title):
+                score += 140
+
+            # Academic program pages are usually not about physical location.
+            if "/akademik/" in url and not any(p in url for p in ("/iletisim", "/contact", "/ulasim", "/adres")):
+                score -= 35
+
         return score
 
     # 1) Prefer DB chunks if available — score every row, then take top k by score.
@@ -225,6 +301,9 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 scored_all.append((s, updated, row))
 
             scored_all.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            top_score = scored_all[0][0] if scored_all else 0
+            if top_score <= 0:
+                return ""
 
             logger.info("retrieve_context(db): question=%r", question)
             for rank, (s, _u, row) in enumerate(scored_all[:k], start=1):
@@ -291,10 +370,23 @@ def retrieve_context(question: str, k: int = 5) -> str:
 
 def ask_gemma(prompt: str) -> str:
     try:
+        base_url = (os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+        model = (os.environ.get("OLLAMA_MODEL") or "gemma2:2b").strip()
+        # Keep responses fast/compact by default; can be overridden via env.
+        num_predict = int(os.environ.get("OLLAMA_NUM_PREDICT", "256"))
+        temperature = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
         response = requests.post(
-            "http://host.docker.internal:11434/api/generate",
-            json={"model": "gemma:2b", "prompt": prompt, "stream": False},
-            timeout=120,
+            f"{base_url}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": num_predict,
+                    "temperature": temperature,
+                },
+            },
+            timeout=300,
         )
         response.raise_for_status()
         data = response.json()
@@ -332,16 +424,80 @@ def ask(request):
         return JsonResponse({"detail": "Question cannot be empty."}, status=400)
 
     try:
-        if not _looks_acibadem_related(question):
-            return JsonResponse({"answer": "Ben Acıbadem Üniversitesi odaklı bir asistanım."})
+        q_lower = question.lower()
+        address_intent = any(
+            t in q_lower
+            for t in (
+                "adres",
+                "address",
+                "kampüs",
+                "kampus",
+                "campus",
+                "konum",
+                "location",
+                "ulaşım",
+                "ulasim",
+                "nerede",
+            )
+        )
 
         context = retrieve_context(question, k=5)
+        # If we cannot retrieve any relevant context and the query doesn't look on-topic,
+        # avoid hallucinations by refusing politely.
+        if not context and not _looks_acibadem_related(question):
+            return JsonResponse({"answer": "Ben Acıbadem Üniversitesi odaklı bir asistanım."})
+
         if not context:
             return JsonResponse(
                 {
-                    "answer": "Bu konuda güvenilir bilgi bulamadım. Lütfen soruyu Acıbadem Üniversitesi ile ilgili daha net bir şekilde sor."
+                    "answer": (
+                        "Bu konuda güvenilir bilgi bulamadım. "
+                        "Veritabanımda ilgili içerik yoksa uydurma bilgi veremem. "
+                        "Resmî web sitesindeki İletişim/Ulaşım bölümünden doğrulayabilirsin."
+                    )
                 }
             )
+
+        # If user asks for address/location but the retrieved context doesn't contain address-like signals,
+        # don't waste time calling the model on irrelevant content.
+        if address_intent:
+            ctx_l = context.lower()
+            has_address_signal = any(
+                s in ctx_l
+                for s in (
+                    "istanbul",
+                    "ataşehir",
+                    "atasehir",
+                    "cad",
+                    "caddesi",
+                    "sok",
+                    "sk",
+                    "no:",
+                    "kampüs",
+                    "kampus",
+                    "yerleşke",
+                    "yerleske",
+                    "ulaşım",
+                    "ulasim",
+                    "iletişim",
+                    "iletisim",
+                )
+            )
+            if not has_address_signal:
+                return JsonResponse(
+                    {
+                        "answer": (
+                            "Adres/konum bilgisini veritabanımda net olarak bulamadım. "
+                            "Yanlış bilgi vermemek için tahmin edemiyorum. "
+                            "Resmî web sitesindeki İletişim/Ulaşım sayfasından kontrol edebilirsin."
+                        )
+                    }
+                )
+
+        # Truncate context to keep latency manageable on small local models.
+        max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "4500"))
+        if len(context) > max_context_chars:
+            context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
 
         prompt = f"""
 Sen Acıbadem Üniversitesi için çalışan bir yapay zeka asistanısın.
