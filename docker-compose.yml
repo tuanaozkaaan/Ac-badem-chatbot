@@ -8,6 +8,8 @@
 services:
   web:
     build: .
+    env_file:
+      - .env
     ports:
       # Host port 8000 is often occupied by another backend service.
       # Keep container port 8000 as-is, expose it on 8001.

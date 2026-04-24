@@ -7,11 +7,22 @@ from pathlib import Path
 import requests
 from django.db.models import Q
 from django.http import JsonResponse
+from django.utils import timezone
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 logger = logging.getLogger(__name__)
+
+# Crawled chunks often omit the postal block; official page:
+# https://acibadem.edu.tr/kayit/iletisim/ulasim
+OFFICIAL_CAMPUS_ADDRESS_BLOCK = (
+    "[Resmî kampüs adresi ve iletişim — Acıbadem Üniversitesi; "
+    "kaynak: acibadem.edu.tr/kayit/iletisim/ulasim]\n"
+    "Kerem Aydınlar Kampüsü, Kayışdağı Cad. No:32, 34752 Ataşehir/İstanbul\n"
+    "Telefon: 0216 500 44 44, 0216 576 50 76\n"
+    "E-posta: info@acibadem.edu.tr\n"
+)
 
 
 _TR_STOPWORDS = {
@@ -206,6 +217,15 @@ def retrieve_context(question: str, k: int = 5) -> str:
     keywords = _extract_keywords(question)
     q_lower = (question or "").lower()
 
+    # Multi-word phrases (not produced by whitespace tokenization) improve DB icontains narrowing.
+    extra_lookup_terms: list[str] = []
+    if "bilgisayar mühendisliği" in q_lower or "bilgisayar muhendisligi" in q_lower:
+        extra_lookup_terms.extend(
+            ["bilgisayar mühendisliği", "bilgisayar muhendisligi", "bilgisayar mühendis", "bilgisayar muhendis"]
+        )
+    if "bölüm başkanı" in q_lower or "bolum baskani" in q_lower:
+        extra_lookup_terms.extend(["bölüm başkanı", "bolum baskani", "bölüm başkan", "bolum baskan"])
+
     # Intent detection (priority matters):
     # - If question mentions staj/internship => internship intent
     # - Else if question mentions apply/admission terms => general admission intent
@@ -230,6 +250,37 @@ def retrieve_context(question: str, k: int = 5) -> str:
             "nasil gid",
         )
     )
+    faculty_head_intent = any(
+        t in q_lower
+        for t in (
+            "bölüm başkanı",
+            "bolum baskani",
+            "bölüm başkan",
+            "bolum baskan",
+            "program başkanı",
+            "program baskani",
+            "department head",
+            "department chair",
+            "müdür",
+            "mudur",
+        )
+    )
+    if address_intent:
+        # Keep these specific (avoid broad "İstanbul" OR matches that flood candidates).
+        extra_lookup_terms.extend(
+            [
+                "kerem aydınlar",
+                "kerem aydinlar",
+                "iletişim ve ulaşım",
+                "iletisim ve ulasim",
+                "atköy",
+                "atkoy",
+                "inönü",
+                "inonu",
+                "ulaşım",
+                "ulasim",
+            ]
+        )
 
     admission_boost_terms = {
         "admission",
@@ -392,6 +443,71 @@ def retrieve_context(question: str, k: int = 5) -> str:
             if "/akademik/" in url and not any(p in url for p in ("/iletisim", "/contact", "/ulasim", "/adres")):
                 score -= 35
 
+            geo_markers = (
+                "ataşehir",
+                "atasehir",
+                "istanbul",
+                "i̇stanbul",
+                "caddesi",
+                "cad.",
+                "mahalle",
+                "mah.",
+                "posta kodu",
+                "pk.",
+                "inönü",
+                "inonu",
+                "atköy",
+                "atkoy",
+            )
+            geo_hits = sum(1 for g in geo_markers if g in text)
+            if geo_hits >= 2:
+                score += 110
+            elif geo_hits == 1:
+                score += 50
+            if "no:" in text or " no:" in text:
+                score += 28
+            # Down-rank snippets that only place an office on a floor without street/district clues.
+            if "kat" in text and any(o in text for o in ("ofis", "office", "acumed", "büro", "biro")):
+                if not any(s in text for s in ("ataşehir", "atasehir", "istanbul", "caddesi", "mahalle", "inönü", "inonu")):
+                    score -= 95
+
+        if faculty_head_intent:
+            if any(x in text for x in ("başkan", "baskan", "müdür", "mudur", "chair", "head of")):
+                score += 28
+            if any(x in title for x in ("başkan", "baskan", "müdür", "mudur", "chair")):
+                score += 55
+            if any(x in section for x in ("başkan", "baskan", "müdür", "mudur")):
+                score += 35
+            if "/akademik/" in url:
+                score += 18
+
+        # When user names a specific engineering/CS department, avoid ranking unrelated "bölüm başkanı" pages.
+        cs_dept_focus = faculty_head_intent and any(
+            t in q_lower for t in ("bilgisayar", "yazılım", "yazilim", "computer", "mühendislik", "muhendislik")
+        )
+        if cs_dept_focus:
+            if any(t in text for t in ("bilgisayar", "yazılım", "yazilim", "computer science", "computer")):
+                score += 55
+            if any(t in title for t in ("bilgisayar", "yazılım", "yazilim", "computer")):
+                score += 70
+            if any(t in url for t in ("bilgisayar", "yazilim", "computer", "mühendislik", "muhendislik")):
+                score += 45
+            if "bilgisayar-programciligi" in url or "bilgisayar-programcılığı" in url:
+                score += 85
+            if ("sağlık yönetimi" in text or "saglik yonetimi" in text) and "bilgisayar" not in text and "yazılım" not in text:
+                score -= 95
+            if ("onlisans" in url or "onlisans" in text) and "bilgisayar" not in text:
+                score -= 35
+            for bad in (
+                "saglik-yonetimi",
+                "saglik-hizmetleri",
+                "radyoterapi",
+                "yabanci-diller",
+                "ingilizce-hazirlik",
+            ):
+                if bad in url and "bilgisayar-programciligi" not in url and "muhendislik" not in url:
+                    score -= 140
+
         return score
 
     # 1) Prefer DB chunks if available — score a bounded candidate set, then take top k by score.
@@ -409,16 +525,27 @@ def retrieve_context(question: str, k: int = 5) -> str:
             for kw in keywords[:12]:
                 if len(kw) < 3:
                     continue
-                for term in (kw, kw[:5] if len(kw) >= 7 else ""):
-                    if len(term) >= 3 and term not in seen_terms:
-                        seen_terms.add(term)
-                        lookup_terms.append(term)
-                if len(lookup_terms) >= 18:
+                if kw not in seen_terms:
+                    seen_terms.add(kw)
+                    lookup_terms.append(kw)
+                # Longer root for DB icontains (avoid e.g. "başkanı"[:5] -> "başka" false matches).
+                if len(kw) >= 7:
+                    plen = min(12, max(6, len(kw) - 1))
+                    root = kw[:plen]
+                    if len(root) >= 5 and root != kw and root not in seen_terms:
+                        seen_terms.add(root)
+                        lookup_terms.append(root)
+                if len(lookup_terms) >= 22:
                     break
 
-            candidate_qs = base_qs
+            for t in extra_lookup_terms:
+                tt = (t or "").strip()
+                if len(tt) >= 3 and tt not in seen_terms:
+                    seen_terms.add(tt)
+                    lookup_terms.append(tt)
+
+            q_filter = Q()
             if lookup_terms:
-                q_filter = Q()
                 for term in lookup_terms:
                     q_filter |= (
                         Q(chunk_text__icontains=term)
@@ -426,6 +553,35 @@ def retrieve_context(question: str, k: int = 5) -> str:
                         | Q(section__icontains=term)
                         | Q(url__icontains=term)
                     )
+
+            candidate_qs = base_qs
+            if address_intent:
+                # Prefer real contact / transport / district lines instead of random "İstanbul" mentions.
+                addr_anchor = (
+                    Q(url__icontains="iletisim")
+                    | Q(url__icontains="ulasim")
+                    | Q(url__icontains="contact")
+                    | Q(url__icontains="/adres")
+                    | Q(chunk_text__icontains="ataşehir")
+                    | Q(chunk_text__icontains="atasehir")
+                    | Q(chunk_text__icontains="inönü")
+                    | Q(chunk_text__icontains="inonu")
+                    | Q(chunk_text__icontains="kerem aydınlar")
+                    | Q(chunk_text__icontains="kerem aydinlar")
+                )
+                addr_qs = base_qs.filter(addr_anchor)
+                if addr_qs.exists():
+                    if lookup_terms:
+                        merged = addr_qs.filter(q_filter)
+                        candidate_qs = merged if merged.exists() else addr_qs
+                    else:
+                        candidate_qs = addr_qs
+                elif lookup_terms:
+                    narrowed = base_qs.filter(q_filter)
+                    candidate_qs = narrowed if narrowed.exists() else base_qs[:max_candidates]
+                else:
+                    candidate_qs = base_qs[:max_candidates]
+            elif lookup_terms:
                 narrowed = base_qs.filter(q_filter)
                 candidate_qs = narrowed if narrowed.exists() else base_qs[:max_candidates]
             else:
@@ -514,17 +670,22 @@ def ask_gemma(prompt: str) -> str:
         # Keep responses fast/compact by default; can be overridden via env.
         num_predict = int(os.environ.get("OLLAMA_NUM_PREDICT", "256"))
         temperature = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
+        # Keep model loaded in VRAM/RAM between requests (e.g. "10m", "0" to unload). Empty = omit.
+        keep_alive = (os.environ.get("OLLAMA_KEEP_ALIVE") or "").strip()
+        payload: dict = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": num_predict,
+                "temperature": temperature,
+            },
+        }
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
         response = requests.post(
             f"{base_url}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "num_predict": num_predict,
-                    "temperature": temperature,
-                },
-            },
+            json=payload,
             timeout=300,
         )
         if response.status_code == 404:
@@ -553,6 +714,51 @@ def _bootstrap_rag() -> None:
 def health(_request):
     return JsonResponse({"status": "ok"})
 
+
+def _conversation_title_from_question(question: str, max_len: int = 80) -> str:
+    t = " ".join((question or "").split())
+    if not t:
+        return "Yeni sohbet"
+    if len(t) <= max_len:
+        return t
+    return t[: max_len - 1].rstrip() + "…"
+
+
+def _touch_conversation_updated_at(conv) -> None:
+    from chatbot.models import Conversation
+
+    Conversation.objects.filter(pk=conv.pk).update(updated_at=timezone.now())
+
+
+def _resolve_conversation(body: dict):
+    from chatbot.models import Conversation
+
+    raw = body.get("conversation_id")
+    if raw in (None, "", False):
+        return Conversation.objects.create(title=""), None
+    try:
+        cid = int(raw)
+    except (TypeError, ValueError):
+        return None, JsonResponse({"detail": "Invalid conversation_id."}, status=400)
+    conv = Conversation.objects.filter(pk=cid).first()
+    if not conv:
+        return None, JsonResponse({"detail": "Conversation not found."}, status=404)
+    return conv, None
+
+
+def _persist_assistant_reply(conv, text: str, *, status: int = 200, as_detail: bool = False) -> JsonResponse:
+    from chatbot.models import Message
+
+    Message.objects.create(conversation=conv, role=Message.ROLE_ASSISTANT, content=text)
+    _touch_conversation_updated_at(conv)
+    payload: dict = {"conversation_id": conv.pk}
+    if as_detail:
+        payload["detail"] = text
+    else:
+        payload["answer"] = text
+    return JsonResponse(payload, status=status)
+
+
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def ask(request):
@@ -569,6 +775,17 @@ def ask(request):
     question = (body.get("question") or "").strip()
     if not question:
         return JsonResponse({"detail": "Question cannot be empty."}, status=400)
+
+    conv, conv_err = _resolve_conversation(body)
+    if conv_err is not None:
+        return conv_err
+
+    from chatbot.models import Message
+
+    Message.objects.create(conversation=conv, role=Message.ROLE_USER, content=question)
+    if not (conv.title or "").strip():
+        conv.title = _conversation_title_from_question(question)
+        conv.save(update_fields=["title"])
 
     try:
         lang = _detect_language(question)
@@ -596,82 +813,43 @@ def ask(request):
             )
         )
 
-        context = retrieve_context(question, k=5)
+        context = retrieve_context(question, k=8 if address_intent else 5)
+        if address_intent:
+            ctx_body = (context or "").strip()
+            context = (
+                f"{OFFICIAL_CAMPUS_ADDRESS_BLOCK}\n{ctx_body}".strip()
+                if ctx_body
+                else OFFICIAL_CAMPUS_ADDRESS_BLOCK
+            )
         # If we cannot retrieve any relevant context and the query doesn't look on-topic,
         # avoid hallucinations by refusing politely.
         if not context and not _looks_acibadem_related(question):
-            return JsonResponse(
-                {
-                    "answer": (
-                        "Ben Acıbadem Üniversitesi odaklı bir asistanım."
-                        if is_tr
-                        else "I'm an assistant focused on Acibadem University."
-                    )
-                }
+            return _persist_assistant_reply(
+                conv,
+                (
+                    "Ben Acıbadem Üniversitesi odaklı bir asistanım."
+                    if is_tr
+                    else "I'm an assistant focused on Acibadem University."
+                ),
             )
 
         if not context:
-            return JsonResponse(
-                {
-                    "answer": (
-                        (
-                            "Bu konuda güvenilir bilgi bulamadım. "
-                            "Veritabanımda ilgili içerik yoksa uydurma bilgi veremem. "
-                            "Resmî web sitesindeki İletişim/Ulaşım bölümünden doğrulayabilirsin."
-                        )
-                        if is_tr
-                        else (
-                            "I couldn't find reliable information in my data. "
-                            "If it's not in my database, I can't make it up. "
-                            "Please verify on the official website's Contact/Transportation pages."
-                        )
+            return _persist_assistant_reply(
+                conv,
+                (
+                    (
+                        "Bu konuda güvenilir bilgi bulamadım. "
+                        "Veritabanımda ilgili içerik yoksa uydurma bilgi veremem. "
+                        "Resmî web sitesindeki İletişim/Ulaşım bölümünden doğrulayabilirsin."
                     )
-                }
+                    if is_tr
+                    else (
+                        "I couldn't find reliable information in my data. "
+                        "If it's not in my database, I can't make it up. "
+                        "Please verify on the official website's Contact/Transportation pages."
+                    )
+                ),
             )
-
-        # If user asks for address/location but the retrieved context doesn't contain address-like signals,
-        # don't waste time calling the model on irrelevant content.
-        if address_intent:
-            ctx_l = context.lower()
-            has_address_signal = any(
-                s in ctx_l
-                for s in (
-                    "istanbul",
-                    "ataşehir",
-                    "atasehir",
-                    "cad",
-                    "caddesi",
-                    "sok",
-                    "sk",
-                    "no:",
-                    "kampüs",
-                    "kampus",
-                    "yerleşke",
-                    "yerleske",
-                    "ulaşım",
-                    "ulasim",
-                    "iletişim",
-                    "iletisim",
-                )
-            )
-            if not has_address_signal:
-                return JsonResponse(
-                    {
-                        "answer": (
-                            (
-                                "Adres/konum bilgisini veritabanımda net olarak bulamadım. "
-                                "Yanlış bilgi vermemek için tahmin edemiyorum. "
-                                "Resmî web sitesindeki İletişim/Ulaşım sayfasından kontrol edebilirsin."
-                            )
-                            if is_tr
-                            else (
-                                "I couldn't find a clear address/location in my database. "
-                                "To avoid giving wrong information, I can't guess. "
-                                "Please check the official website's Contact/Transportation page."
-                            )
-                        )
-                    }
-                )
 
         # Truncate context to keep latency manageable on small local models.
         max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "4500"))
@@ -679,6 +857,17 @@ def ask(request):
             context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
 
         answer_language_instruction = "Türkçe" if is_tr else "English"
+
+        address_rules = ""
+        if address_intent:
+            address_rules = """
+ADDRESS / LOCATION QUESTIONS:
+- The context begins with an official postal-style campus block from the university's Contact/Transportation page. When the user asks for the school/campus address or location, state that full address clearly in your first sentence or first short paragraph (street, number, postal code, district, city).
+- If additional context below describes metro/bus routes or a building/floor, add that after the postal address; do not replace the postal address with an indoor office line alone.
+- Prefer the official postal-style campus address when it appears in the context (district, city, street/avenue, building number, postal code if any).
+- If the context mixes a general campus address with an indoor office location (e.g. a unit on a specific floor), lead with the postal/campus address; mention the office only as secondary detail from the same context.
+- Never treat an indoor office line as the full university address if a broader postal/campus line exists in the context.
+"""
 
         prompt = f"""
 You are a helpful university assistant.
@@ -694,6 +883,10 @@ RETRIEVAL RULES:
 - You MUST use the context even if it is in a different language than the question.
 - If needed, translate the relevant information before answering.
 
+SCOPE / PROGRAM NAME:
+- The user may say "bilgisayar mühendisliği" while the retrieved pages describe a closely related program (e.g. Bilgisayar Programcılığı önlisans). If the context contains a named program head / coordinator, answer with that person and clearly state which program/level the source refers to.
+- Never invent a person or title that is not supported by the context.
+{address_rules}
 ANSWERING RULES:
 - Do NOT hallucinate.
 - If the answer exists in the context, use it clearly.
@@ -719,9 +912,9 @@ Kullanıcı sorusu:
 """
         answer = ask_gemma(prompt)
         if answer.startswith("Gemma error:"):
-            return JsonResponse({"detail": answer}, status=502)
+            return _persist_assistant_reply(conv, answer, status=502, as_detail=True)
         if not (answer or "").strip():
-            return JsonResponse({"answer": no_info_msg})
+            return _persist_assistant_reply(conv, no_info_msg)
         # Enforce answer language: if model drifts (or mixes languages), translate back
         # without adding facts. Be strict for EN questions (UI expectation).
         if is_tr:
@@ -730,10 +923,65 @@ Kullanıcı sorusu:
         else:
             if (not _looks_english(answer)) or _looks_turkish(answer):
                 answer = _translate_answer(answer, "en")
-        return JsonResponse({"answer": answer})
+        return _persist_assistant_reply(conv, answer)
     except Exception:
         logger.exception("Failed to answer question in /ask")
-        return JsonResponse(
-            {"detail": "Backend initialization failed. Check model/dependencies and server logs."},
-            status=500,
-        )
+        err_text = "Backend initialization failed. Check model/dependencies and server logs."
+        return _persist_assistant_reply(conv, err_text, status=500, as_detail=True)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def conversations_root(request):
+    from chatbot.models import Conversation
+
+    if request.method == "GET":
+        qs = Conversation.objects.all().order_by("-updated_at")[:200]
+        results = [
+            {
+                "id": c.id,
+                "title": c.title or "",
+                "created_at": c.created_at.isoformat(),
+                "updated_at": c.updated_at.isoformat(),
+            }
+            for c in qs
+        ]
+        return JsonResponse({"results": results})
+    conv = Conversation.objects.create(title="")
+    return JsonResponse(
+        {
+            "id": conv.id,
+            "title": conv.title,
+            "created_at": conv.created_at.isoformat(),
+            "updated_at": conv.updated_at.isoformat(),
+        },
+        status=201,
+    )
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def conversations_detail(request, pk):
+    from chatbot.models import Conversation
+
+    conv = Conversation.objects.filter(pk=pk).first()
+    if not conv:
+        return JsonResponse({"detail": "Not found."}, status=404)
+    msgs = [
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "created_at": m.created_at.isoformat(),
+        }
+        for m in conv.messages.all()
+    ]
+    return JsonResponse(
+        {
+            "id": conv.id,
+            "title": conv.title,
+            "created_at": conv.created_at.isoformat(),
+            "updated_at": conv.updated_at.isoformat(),
+            "messages": msgs,
+        }
+    )

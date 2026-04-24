@@ -64,6 +64,48 @@ class PageChunk(models.Model):
         return f"PageChunk(page_id={self.scraped_page_id}, idx={self.chunk_index})"
 
 
+class Conversation(models.Model):
+    """UI chat session persisted for history across reloads."""
+
+    title = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-updated_at",)
+
+    def __str__(self) -> str:
+        return self.title or f"Conversation {self.pk}"
+
+
+class Message(models.Model):
+    ROLE_USER = "user"
+    ROLE_ASSISTANT = "assistant"
+    ROLE_CHOICES = (
+        (ROLE_USER, "User"),
+        (ROLE_ASSISTANT, "Assistant"),
+    )
+
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name="messages",
+        db_index=True,
+    )
+    role = models.CharField(max_length=16, choices=ROLE_CHOICES, db_index=True)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ("created_at",)
+        indexes = [
+            models.Index(fields=["conversation", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Message({self.role}, conv={self.conversation_id})"
+
+
 class ChunkEmbedding(models.Model):
     chunk = models.OneToOneField(
         PageChunk,

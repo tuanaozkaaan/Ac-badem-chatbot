@@ -7,18 +7,18 @@
     <title>ACUdost</title>
     <style>
       :root {
-        --bg: #0f1115;
-        --panel: #171a21;
-        --panel-soft: #202530;
-        --panel-border: #2a313d;
-        --text: #e7eaf0;
-        --muted: #9aa4b2;
-        --accent: #4d7cff;
-        --accent-hover: #3f69db;
-        --assistant-bubble: #212632;
-        --user-bubble: #3551a6;
-        --shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
-        --shadow-soft: 0 10px 22px rgba(0, 0, 0, 0.22);
+        --bg: #0e1117;
+        --panel: #151922;
+        --panel-soft: #1c2230;
+        --panel-border: #2a3344;
+        --text: #eef2f8;
+        --muted: #9aa6b8;
+        --accent: #5b8cff;
+        --accent-hover: #4a78e8;
+        --assistant-bubble: #1e2433;
+        --user-bubble: #3d5bdc;
+        --shadow: 0 14px 36px rgba(0, 0, 0, 0.22);
+        --shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.18);
       }
 
       * {
@@ -48,15 +48,15 @@
         content: "";
         position: fixed;
         inset: 0;
-        background: rgba(0, 0, 0, 0.58);
-        backdrop-filter: blur(2px);
+        background: linear-gradient(135deg, rgba(12, 16, 24, 0.45), rgba(18, 24, 36, 0.55));
+        backdrop-filter: blur(6px) saturate(1.05);
         z-index: 0;
         pointer-events: none;
       }
 
       .app {
         display: grid;
-        grid-template-columns: 280px 1fr;
+        grid-template-columns: minmax(260px, 300px) 1fr;
         height: 100vh;
         height: 100dvh; /* stable on mobile + prevents jump */
         min-height: 100vh;
@@ -66,11 +66,84 @@
 
       .sidebar {
         border-right: 1px solid var(--panel-border);
-        background: #13161d;
-        padding: 16px;
+        background: linear-gradient(180deg, rgba(18, 22, 30, 0.98), rgba(14, 17, 24, 0.98));
+        padding: 14px 12px 12px;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 10px;
+        min-height: 0;
+      }
+
+      .sidebar-heading {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+        padding: 4px 6px 0;
+      }
+
+      .conv-list {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding-right: 2px;
+      }
+
+      .conv-list::-webkit-scrollbar {
+        width: 6px;
+      }
+
+      .conv-list::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 99px;
+      }
+
+      .conv-item {
+        width: 100%;
+        text-align: left;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(26, 31, 42, 0.65);
+        color: var(--text);
+        border-radius: 12px;
+        padding: 10px 10px 8px;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+      }
+
+      .conv-item:hover {
+        background: rgba(36, 44, 60, 0.88);
+        border-color: rgba(91, 140, 255, 0.35);
+      }
+
+      .conv-item:active {
+        transform: scale(0.99);
+      }
+
+      .conv-item.active {
+        border-color: rgba(91, 140, 255, 0.65);
+        background: rgba(40, 56, 92, 0.55);
+        box-shadow: 0 0 0 1px rgba(91, 140, 255, 0.12);
+      }
+
+      .conv-item-title {
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.35;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        word-break: break-word;
+      }
+
+      .conv-item-meta {
+        margin-top: 4px;
+        font-size: 11px;
+        color: var(--muted);
       }
 
       .new-chat-btn {
@@ -245,23 +318,58 @@
       }
 
       .bubble {
-        max-width: min(80%, 700px);
-        border-radius: 16px;
-        padding: 12px 14px;
-        line-height: 1.45;
+        max-width: min(82%, 720px);
+        border-radius: 18px;
+        padding: 14px 16px;
+        line-height: 1.5;
         white-space: pre-wrap;
         word-break: break-word;
-        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.2);
       }
 
       .bubble.assistant {
-        background: rgba(33, 38, 50, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(28, 34, 48, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.1);
       }
 
       .bubble.user {
-        background: linear-gradient(180deg, rgba(77, 124, 255, 0.95), rgba(63, 105, 219, 0.92));
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: linear-gradient(165deg, rgba(91, 140, 255, 0.95), rgba(61, 91, 220, 0.92));
+        border: 1px solid rgba(255, 255, 255, 0.14);
+      }
+
+      .loading-card {
+        border-radius: 16px;
+        padding: 16px 18px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: linear-gradient(120deg, rgba(32, 38, 52, 0.95), rgba(24, 28, 40, 0.95));
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+      }
+
+      .loading-shimmer {
+        height: 10px;
+        border-radius: 6px;
+        margin-top: 10px;
+        background: linear-gradient(
+          90deg,
+          rgba(255, 255, 255, 0.06) 0%,
+          rgba(255, 255, 255, 0.14) 50%,
+          rgba(255, 255, 255, 0.06) 100%
+        );
+        background-size: 200% 100%;
+        animation: shimmer 1.2s ease-in-out infinite;
+      }
+
+      .loading-shimmer.narrow {
+        width: 55%;
+      }
+
+      @keyframes shimmer {
+        0% {
+          background-position: 200% 0;
+        }
+        100% {
+          background-position: -200% 0;
+        }
       }
 
       .loading-dots {
@@ -301,10 +409,11 @@
       }
 
       .composer-wrap {
+        flex-shrink: 0;
         border-top: 1px solid var(--panel-border);
         padding: 14px 18px 18px;
-        background: rgba(15, 17, 21, 0.7);
-        backdrop-filter: blur(10px);
+        background: rgba(14, 17, 23, 0.88);
+        backdrop-filter: blur(12px);
       }
 
       .composer {
@@ -402,6 +511,8 @@
     <div class="app">
       <aside class="sidebar">
         <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
+        <div class="sidebar-heading">Sohbetler</div>
+        <div class="conv-list" id="convList" aria-label="Sohbet geçmişi"></div>
       </aside>
 
       <main class="main">
@@ -443,6 +554,7 @@
     <script>
       // Same-origin by default so it works with both runserver and Docker port mappings.
       const API_URL = "/ask";
+      const API_CONV = "/api/conversations/";
       const FETCH_TIMEOUT_MS = 240000;
       const messagesEl = document.getElementById("messages");
       const messagesWrapEl = document.getElementById("messagesWrap");
@@ -451,9 +563,12 @@
       const questionInput = document.getElementById("questionInput");
       const sendBtn = document.getElementById("sendBtn");
       const newChatBtn = document.getElementById("newChatBtn");
+      const convListEl = document.getElementById("convList");
 
       const conversation = [];
       let loadingBubble = null;
+      let currentConversationId = null;
+      let conversationsCache = [];
 
       const SUGGESTIONS = [
         { label: "Get started", text: "How can I help you today?" },
@@ -461,6 +576,85 @@
         { label: "Academics", text: "Bölüm başkanı kimdir?" },
         { label: "Contact", text: "İletişim bilgileri nelerdir?" },
       ];
+
+      function formatConvTitle(c) {
+        const t = (c && c.title) ? String(c.title).trim() : "";
+        return t || "Yeni sohbet";
+      }
+
+      function formatShortTime(iso) {
+        if (!iso) return "";
+        try {
+          const d = new Date(iso);
+          return d.toLocaleString("tr-TR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+        } catch (_e) {
+          return "";
+        }
+      }
+
+      async function loadConversations() {
+        if (!convListEl) return;
+        try {
+          const r = await fetch(API_CONV);
+          if (!r.ok) return;
+          const data = await r.json();
+          conversationsCache = Array.isArray(data.results) ? data.results : [];
+          renderConvList();
+        } catch (_e) {}
+      }
+
+      function renderConvList() {
+        if (!convListEl) return;
+        convListEl.innerHTML = "";
+        for (const c of conversationsCache) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "conv-item" + (c.id === currentConversationId ? " active" : "");
+          btn.dataset.id = String(c.id);
+          const title = document.createElement("div");
+          title.className = "conv-item-title";
+          title.textContent = formatConvTitle(c);
+          const meta = document.createElement("div");
+          meta.className = "conv-item-meta";
+          meta.textContent = formatShortTime(c.updated_at);
+          btn.appendChild(title);
+          btn.appendChild(meta);
+          btn.addEventListener("click", () => {
+            void selectConversation(c.id);
+          });
+          convListEl.appendChild(btn);
+        }
+      }
+
+      function appendStaticBubble(role, text) {
+        const row = document.createElement("div");
+        row.className = `message-row ${role}`;
+        const bubble = document.createElement("div");
+        bubble.className = `bubble ${role}`;
+        bubble.textContent = text;
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+      }
+
+      async function selectConversation(id) {
+        currentConversationId = id;
+        clearLoading();
+        try {
+          const r = await fetch(`${API_CONV}${id}/`);
+          if (!r.ok) return;
+          const data = await r.json();
+          messagesEl.innerHTML = "";
+          conversation.length = 0;
+          const msgs = Array.isArray(data.messages) ? data.messages : [];
+          for (const m of msgs) {
+            conversation.push({ role: m.role, content: m.content });
+            appendStaticBubble(m.role, m.content);
+          }
+          renderWelcome();
+          renderConvList();
+          scrollToBottom();
+        } catch (_e) {}
+      }
 
       function autoResizeInput() {
         questionInput.style.height = "auto";
@@ -548,16 +742,13 @@
       function showLoading() {
         const row = document.createElement("div");
         row.className = "message-row assistant";
-
-        const bubble = document.createElement("div");
-        bubble.className = "bubble assistant";
-        bubble.innerHTML =
-          '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.35">' +
-          "Yanıt hazırlanıyor… Ollama CPU'da ilk yüklemede 30–120 sn sürebilir; çok chunk varsa arama da zaman alabilir." +
-          "</div>" +
-          '<span class="loading-dots"><span></span><span></span><span></span></span>';
-
-        row.appendChild(bubble);
+        const card = document.createElement("div");
+        card.className = "loading-card";
+        card.innerHTML =
+          '<div style="font-size:13px;font-weight:650;color:var(--text);letter-spacing:0.01em">Yanıt hazırlanıyor</div>' +
+          '<div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.45">Model ve veri araması birkaç saniye ile birkaç dakika arası sürebilir.</div>' +
+          '<div class="loading-shimmer"></div><div class="loading-shimmer narrow"></div>';
+        row.appendChild(card);
         messagesEl.appendChild(row);
         loadingBubble = row;
         renderWelcome();
@@ -589,11 +780,15 @@
         const t0 = performance.now();
         const controller = new AbortController();
         const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        const payload = { question };
+        if (currentConversationId != null) {
+          payload.conversation_id = currentConversationId;
+        }
         try {
           const response = await fetch(API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question }),
+            body: JSON.stringify(payload),
             signal: controller.signal,
           });
 
@@ -605,15 +800,23 @@
             try {
               const errJson = JSON.parse(rawError || "{}");
               errMessage = errJson.detail || errJson.error || errMessage;
+              if (typeof errJson.conversation_id === "number") {
+                currentConversationId = errJson.conversation_id;
+              }
             } catch (_e) {
               errMessage = (rawError || errMessage).slice(0, 300);
             }
             addAssistantMessageWithTiming(`API error: ${errMessage}`, performance.now() - t0);
+            void loadConversations();
             return;
           }
 
           const data = await response.json();
+          if (typeof data.conversation_id === "number") {
+            currentConversationId = data.conversation_id;
+          }
           addAssistantMessageWithTiming(data.answer || "No answer returned.", performance.now() - t0);
+          void loadConversations();
         } catch (error) {
           clearLoading();
           const elapsedMs = performance.now() - t0;
@@ -625,6 +828,7 @@
           } else {
             addAssistantMessageWithTiming(`Connection error: ${error.message}`, elapsedMs);
           }
+          void loadConversations();
         } finally {
           window.clearTimeout(timeoutId);
           setSendingState(false);
@@ -634,10 +838,12 @@
 
       sendBtn.addEventListener("click", sendMessage);
       newChatBtn.addEventListener("click", () => {
+        currentConversationId = null;
         conversation.length = 0;
         messagesEl.innerHTML = "";
         clearLoading();
         renderWelcome();
+        renderConvList();
         questionInput.focus();
       });
 
@@ -653,6 +859,7 @@
       renderSuggestions();
       autoResizeInput();
       questionInput.focus();
+      void loadConversations();
     </script>
   </body>
 </html>
