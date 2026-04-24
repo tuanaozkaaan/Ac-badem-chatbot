@@ -1,4 +1,5 @@
 import hashlib
+import heapq
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import requests
-from django.db.models import Q
+from django.db.models import Count, Max, Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.shortcuts import render
@@ -395,6 +396,10 @@ def _cs_engineering_course_catalog_intent(question: str) -> bool:
         "dersleri",
         "dersler",
         "hangi ders",
+        "hangi dersler",
+        "dersler var",
+        "programinda hangi",
+        "programda hangi",
         "mufredat",
         "müfredat",
         "katalog",
@@ -445,6 +450,11 @@ def _faculty_department_catalog_intent(question: str) -> bool:
         return True
     if "hangi" in qf and ("bolum" in qf or "fakulte" in qf or "program" in qf):
         return True
+    # "Eczacılık fakültesini anlat" gibi tek fakülte sayfası — eskisi gibi geniş bağlam + çoklu URL.
+    if "fakultes" in qf and any(
+        x in qf for x in ("anlat", "tanit", "acikla", "nedir", "hakkinda", "bilgi ver")
+    ):
+        return True
     return False
 
 
@@ -460,7 +470,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
     Candidate chunks are scored (including negative/zero), then top *k* by score are returned.
     To avoid scanning the entire table on large ingests, candidates are narrowed with
     `icontains` OR filters on keywords (plus a short prefix for long tokens) and capped by
-    `RETRIEVE_MAX_CANDIDATES` (default 6000). If no keyword matches, the most recently updated
+    `RETRIEVE_MAX_CANDIDATES` (default 1800). If no keyword matches, the most recently updated
     chunks up to that cap are used instead.
     """
     keywords = _extract_keywords(question)
@@ -471,6 +481,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
     keywords = [k for k in keywords if k not in lookup_noise]
     q_lower = (question or "").lower()
     cs_eng_intent = _cs_engineering_lisans_intent(question)
+    course_catalog_intent = _cs_engineering_course_catalog_intent(question)
     green_campus_q = _green_or_sustainable_campus_question(question)
     dept_catalog_intent = _faculty_department_catalog_intent(question)
 
@@ -488,6 +499,29 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 "computer engineering",
                 "lisans programı",
                 "lisans programi",
+            ]
+        )
+    if course_catalog_intent:
+        extra_lookup_terms.extend(
+            [
+                "obs.acibadem",
+                "obs.acibadem.edu.tr",
+                "bologna",
+                "müfredat",
+                "mufredat",
+                "ders bilgi",
+                "ders kodu",
+                "akts",
+                "kredi",
+                "yarıyıl",
+                "yariyil",
+                "güz",
+                "guz",
+                "bahar",
+                "bilgisayar mühendisliği",
+                "bilgisayar muhendisligi",
+                "öğrenim",
+                "ogrenim",
             ]
         )
     if green_campus_q:
@@ -869,6 +903,36 @@ def retrieve_context(question: str, k: int = 5) -> str:
             if "eczacilik" in url or "eczacılık" in url:
                 score += 90
 
+        if course_catalog_intent:
+            st = (getattr(row, "source_type", None) or "").lower()
+            if st == "obs":
+                score += 110
+            if "obs.acibadem" in url:
+                score += 130
+            blob_ct = f"{text} {title}"
+            for kw in (
+                "müfredat",
+                "mufredat",
+                "bologna",
+                "akts",
+                "kredi",
+                "yarıyıl",
+                "yariyil",
+                "güz",
+                "guz",
+                "bahar",
+                "ders kodu",
+                "ders kod",
+                "öğrenim",
+                "ogrenim",
+                "program çıktısı",
+                "program ciktisi",
+            ):
+                if kw in blob_ct:
+                    score += 38
+            if re.search(r"\b[a-zçğıöşü]{2,5}\s*\d{3}\b", blob_ct, re.I):
+                score += 72
+
         return score
 
     # 1) Prefer DB chunks if available — score a bounded candidate set, then take top k by score.
@@ -876,7 +940,8 @@ def retrieve_context(question: str, k: int = 5) -> str:
         from chatbot.models import PageChunk
 
         if PageChunk.objects.exists():
-            max_candidates = int(os.environ.get("RETRIEVE_MAX_CANDIDATES", "6000"))
+            # 6000 satırı tamamen RAM'de skorlamak yavaş; varsayılanı düşük tut (env ile artırılabilir).
+            max_candidates = max(1, int(os.environ.get("RETRIEVE_MAX_CANDIDATES", "1800")))
             base_qs = PageChunk.objects.only(
                 "chunk_text", "title", "section", "url", "source_type", "updated_at"
             ).order_by("-updated_at")
@@ -950,22 +1015,27 @@ def retrieve_context(question: str, k: int = 5) -> str:
 
             candidate_qs = candidate_qs[:max_candidates]
 
-            scored_all: list[tuple[int, object, object]] = []
-            for row in candidate_qs.iterator(chunk_size=500):
-                s = _score_row(row)
-                updated = row.updated_at or ""
-                scored_all.append((s, updated, row))
+            def _iter_scored_rows():
+                for row in candidate_qs.iterator(chunk_size=400):
+                    yield (_score_row(row), str(row.updated_at or ""), row)
 
-            scored_all.sort(key=lambda x: (x[0], x[1]), reverse=True)
-            top_score = scored_all[0][0] if scored_all else 0
-            # Names / short queries often get low or negative scores after penalties; still return
-            # best-effort chunks so "kimdir?" style questions can use weak DB hits.
-            weak_hits_ok = any(len((kw or "").strip()) >= 3 for kw in keywords[:8])
-            if top_score <= 0 and not weak_hits_ok:
-                return ""
+            pool_size = max(
+                1,
+                min(
+                    max_candidates,
+                    max(500, k * 28) if dept_catalog_intent else max(280, k * 22),
+                ),
+            )
+            scored_pool = heapq.nlargest(
+                pool_size,
+                _iter_scored_rows(),
+                key=lambda t: (t[0], t[1]),
+            )
+            # Düşük veya negatif skorlarda bile en iyi k adayı kullan: erken return "" hem RAG'ı
+            # keser hem de aşağıdaki data/*.txt yedeğine düşmeyi engeller (yorumla uyumlu).
 
-            logger.info("retrieve_context(db): question=%r candidates=%s", question, len(scored_all))
-            for rank, (s, _u, row) in enumerate(scored_all[:k], start=1):
+            logger.info("retrieve_context(db): question=%r pool=%s (max_cand=%s)", question, len(scored_pool), max_candidates)
+            for rank, (s, _u, row) in enumerate(scored_pool[:k], start=1):
                 logger.info("retrieve_context(db): #%s score=%s title=%r", rank, s, row.title)
 
             if dept_catalog_intent:
@@ -986,11 +1056,11 @@ def retrieve_context(question: str, k: int = 5) -> str:
                     url_counts[urlv] = url_counts.get(urlv, 0) + 1
                     return True
 
-                for _s, _u, row in scored_all:
+                for _s, _u, row in scored_pool:
                     if len(picked) >= k:
                         break
                     _take_row(row)
-                for _s, _u, row in scored_all:
+                for _s, _u, row in scored_pool:
                     if len(picked) >= k:
                         break
                     if int(row.pk) in seen_pk:
@@ -998,7 +1068,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
                     picked.append(row)
                     seen_pk.add(int(row.pk))
                 overview_row = None
-                for _s, _u, row in scored_all[:120]:
+                for _s, _u, row in scored_pool[:120]:
                     uu = (row.url or "").rstrip("/").lower()
                     tx = (row.chunk_text or "").lower()
                     if uu.endswith("acibadem.edu.tr") and any(
@@ -1020,7 +1090,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
                     picked = [overview_row] + picked[: max(0, k - 1)]
                 top_rows = picked[:k]
             else:
-                top_rows = [row for _, _, row in scored_all[:k]]
+                top_rows = [row for _, _, row in scored_pool[:k]]
             blocks: list[str] = []
             for c in top_rows:
                 meta = " | ".join(
@@ -1028,9 +1098,11 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 )
                 blocks.append(f"[{meta}]\n{c.chunk_text}" if meta else c.chunk_text)
 
-            return "\n\n---\n\n".join(blocks).strip()
+            merged_db = "\n\n---\n\n".join(blocks).strip()
+            if merged_db:
+                return merged_db
     except Exception:
-        pass
+        logger.exception("retrieve_context: DB veya skorlama hatası (yedeğe düşülüyor)")
 
     # 2) Fallback: local /data/*.txt — include all scored lines, take top k even if low score.
     try:
@@ -1097,21 +1169,26 @@ def _embed_query_normalized(question: str, model_name: str) -> np.ndarray:
     return out / n
 
 
-def _retrieve_top_chunks_by_embedding(question: str, k: int) -> list[dict]:
+@lru_cache(maxsize=16)
+def _embedding_matrix_pack(cache_key: tuple[str, int, int]) -> tuple[np.ndarray, tuple[dict[str, str | int], ...]]:
     """
-    Read-only retrieval: ChunkEmbedding.vector + PageChunk.chunk_text.
-    Rows must match EXPECTED_EMBEDDING_MODEL (or blank model name, same as document_loader).
+    Tüm embedding satırlarını tek seferde matrise çevirir; cache_key (kaynak filtresi + satır sayısı + max id)
+    değişene kadar @lru_cache ile bellekte tutulur — her /ask isteğinde 1947 kez JSON parse etmez.
     """
     from chatbot.models import ChunkEmbedding
     from rag.document_loader import EXPECTED_EMBEDDING_MODEL
 
-    qv = _embed_query_normalized(question, EXPECTED_EMBEDDING_MODEL)
-    q_dim = int(qv.shape[0])
+    kind, _, __ = cache_key
+    source_type = None if kind == "__all__" else kind
+
+    qs = ChunkEmbedding.objects.select_related("chunk")
+    if source_type:
+        qs = qs.filter(chunk__source_type=source_type)
 
     vectors: list[np.ndarray] = []
-    metas: list[dict] = []
+    metas: list[dict[str, str | int]] = []
 
-    for emb in ChunkEmbedding.objects.select_related("chunk").iterator(chunk_size=500):
+    for emb in qs.iterator(chunk_size=800):
         ch = emb.chunk
         if not ch:
             continue
@@ -1124,7 +1201,7 @@ def _retrieve_top_chunks_by_embedding(question: str, k: int) -> list[dict]:
         if name and name != EXPECTED_EMBEDDING_MODEL:
             continue
         arr = np.asarray(emb.vector, dtype=np.float32).ravel()
-        if arr.size == 0 or arr.shape[0] != q_dim:
+        if arr.size == 0:
             continue
         nrm = float(np.linalg.norm(arr) + 1e-12)
         vn = arr / nrm
@@ -1139,17 +1216,59 @@ def _retrieve_top_chunks_by_embedding(question: str, k: int) -> list[dict]:
         )
 
     if not vectors:
-        return []
+        return np.zeros((0, 0), dtype=np.float32), ()
 
     mat = np.stack(vectors, axis=0)
+    return mat, tuple(metas)
+
+
+def _retrieve_top_chunks_by_embedding(
+    question: str,
+    k: int,
+    *,
+    source_type: str | None = None,
+) -> list[dict]:
+    """
+    Read-only retrieval: ChunkEmbedding.vector + PageChunk.chunk_text.
+    source_type='obs' ile yalnızca OBS chunk'ları taranır (ders kataloğu için çok daha hızlı).
+    """
+    from chatbot.models import ChunkEmbedding
+    from rag.document_loader import EXPECTED_EMBEDDING_MODEL
+
+    base = ChunkEmbedding.objects.select_related("chunk")
+    if source_type:
+        base = base.filter(chunk__source_type=source_type)
+    sig = base.aggregate(c=Count("id"), mx=Max("id"))
+    cache_key = (source_type or "__all__", int(sig["c"] or 0), int(sig["mx"] or 0))
+
+    mat, metas_t = _embedding_matrix_pack(cache_key)
+    metas = list(metas_t)
+    if mat.shape[0] == 0 or mat.shape[1] == 0 or not metas:
+        return []
+
+    qv = _embed_query_normalized(question, EXPECTED_EMBEDDING_MODEL)
+    if int(qv.shape[0]) != mat.shape[1]:
+        logger.warning(
+            "embedding_dim_mismatch q_dim=%s mat_dim=%s — boş dönülüyor",
+            qv.shape[0],
+            mat.shape[1],
+        )
+        return []
+
     sims = mat @ qv
     order = np.argsort(-sims)
     top_idx = order[: max(1, min(int(k), len(order)))]
 
     out: list[dict] = []
     for i in top_idx:
-        row = dict(metas[int(i)])
-        row["score"] = float(sims[int(i)])
+        base_row = metas[int(i)]
+        row = {
+            "chunk_id": base_row["chunk_id"],
+            "url": base_row["url"],
+            "title": base_row["title"],
+            "text": base_row["text"],
+            "score": float(sims[int(i)]),
+        }
         out.append(row)
     return out
 
@@ -1223,6 +1342,9 @@ def _strict_rag_verify_response(question: str, body: dict) -> JsonResponse:
 
 
 def ask_gemma(prompt: str) -> str:
+    # CPU'da ilk üretim + uzun prompt 120s'yi aşabiliyor; varsayılanı yükselt (env ile düşürülebilir).
+    ollama_http_timeout = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "300"))
+    ollama_http_timeout = max(45, min(ollama_http_timeout, 900))
     try:
         base_url = (os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
         model = (os.environ.get("OLLAMA_MODEL") or "gemma2:2b").strip()
@@ -1242,10 +1364,11 @@ def ask_gemma(prompt: str) -> str:
         }
         if keep_alive:
             payload["keep_alive"] = keep_alive
+        # (bağlantı, okuma): yavaş üretimde okuma süresi env ile kontrol edilir.
         response = requests.post(
             f"{base_url}/api/generate",
             json=payload,
-            timeout=300,
+            timeout=(min(30, ollama_http_timeout // 3), ollama_http_timeout),
         )
         if response.status_code == 404:
             body = (response.text or "").strip()[:400]
@@ -1260,6 +1383,12 @@ def ask_gemma(prompt: str) -> str:
         return (data["response"] or "").strip()
     except KeyError:
         return "Gemma error: Missing 'response' field in Ollama JSON."
+    except requests.Timeout:
+        return (
+            f"Gemma error: Ollama {ollama_http_timeout}s içinde yanıt vermedi (HTTP zaman aşımı). "
+            "docker compose ps ollama; gerekirse .env: OLLAMA_HTTP_TIMEOUT=480 veya OLLAMA_NUM_PREDICT=160 "
+            "(daha kısa cevap = daha az bekleme). İlk istekte model RAM'e yüklenir, sonrakiler genelde hızlanır."
+        )
     except Exception as e:
         return f"Gemma error: {str(e)}"
 
@@ -1449,6 +1578,42 @@ def ask(request):
             ce_block = _ce_overview_context_block()
             ctx_body = (context or "").strip()
             context = f"{ce_block}\n\n{ctx_body}".strip() if ctx_body else ce_block
+        # Varsayılan KAPALI: CPU'da tüm embedding matrisi + Ollama 4–7 dk'ı aşabiliyor.
+        # Açmak için: ACU_COURSE_CATALOG_EMBED_AUGMENT=1 (veya true) — önbellek ısındıktan sonra daha hızlı.
+        if cs_course_catalog_q and (
+            (os.environ.get("ACU_COURSE_CATALOG_EMBED_AUGMENT") or "0").strip().lower()
+            not in ("0", "false", "no")
+        ):
+            try:
+                from chatbot.models import ChunkEmbedding as _CEMod
+
+                emb_k = min(8, max(6, k_ctx // 2 + 2))
+                obs_emb_n = _CEMod.objects.filter(chunk__source_type="obs").count()
+                # Tek tarama: OBS embedding varsa sadece obs; yoksa tümü (çift tarama kaldırıldı).
+                emb_chunks = _retrieve_top_chunks_by_embedding(
+                    question,
+                    k=emb_k,
+                    source_type="obs" if obs_emb_n > 0 else None,
+                )
+                if emb_chunks:
+                    lines: list[str] = []
+                    for c in emb_chunks:
+                        meta = " | ".join([p for p in [c.get("title") or "", c.get("url") or ""] if p])
+                        t = (c.get("text") or "").strip()
+                        if not t:
+                            continue
+                        lines.append(f"[{meta}]\n{t}" if meta else t)
+                    if lines:
+                        inject = "\n\n---\n\n".join(lines)
+                        base = (context or "").strip()
+                        context = (
+                            f"{base}\n\n---\n\n"
+                            f"[İlgili parçalar — anlamsal (embedding) arama]\n\n{inject}".strip()
+                            if base
+                            else f"[İlgili parçalar — anlamsal (embedding) arama]\n\n{inject}".strip()
+                        )
+            except Exception:
+                logger.exception("course_catalog_embedding_augment_failed")
         if not context:
             return _persist_assistant_reply(
                 conv,
@@ -1472,6 +1637,15 @@ def ask(request):
 
         # Truncate context to keep latency manageable on small local models.
         max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "4500"))
+        embed_augment_on = (
+            (os.environ.get("ACU_COURSE_CATALOG_EMBED_AUGMENT") or "0").strip().lower()
+            not in ("0", "false", "no")
+        )
+        if cs_course_catalog_q and embed_augment_on:
+            max_context_chars = max(
+                max_context_chars,
+                int(os.environ.get("DJANGO_COURSE_CATALOG_CONTEXT_CHARS", "12000")),
+            )
         if len(context) > max_context_chars:
             context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
 

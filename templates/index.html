@@ -566,7 +566,8 @@
       // Same-origin by default so it works with both runserver and Docker port mappings.
       const API_URL = "/ask";
       const API_CONV = "/api/conversations/";
-      const FETCH_TIMEOUT_MS = 240000;
+      /* Embedding matrisi ilk yüklemede + Ollama yavaşsa 4 dk yetmez; 7 dk. */
+      const FETCH_TIMEOUT_MS = 420000;
       const messagesEl = document.getElementById("messages");
       const messagesWrapEl = document.getElementById("messagesWrap");
       const welcomeEl = document.getElementById("welcome");
@@ -833,7 +834,7 @@
           const elapsedMs = performance.now() - t0;
           if (error && error.name === "AbortError") {
             addAssistantMessageWithTiming(
-              "İstek zaman aşımı (4 dk): sunucu yanıt vermedi. Ollama/model yavaş olabilir veya veritabanında çok chunk taranıyordu; web konteynerını yeniden başlatıp tekrar dene.",
+              "İstek zaman aşımı (7 dk): sunucu yanıt vermedi. Ollama/model yavaş olabilir; embedding ilk yüklemede uzun sürebilir. Bir süre sonra tekrar dene veya web/ollama konteynerlarını kontrol et.",
               elapsedMs
             );
           } else {
