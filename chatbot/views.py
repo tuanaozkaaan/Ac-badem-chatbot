@@ -482,6 +482,37 @@ def _faculty_department_catalog_intent(question: str) -> bool:
     return False
 
 
+def _faculty_richness(tf: str) -> int:
+    """
+    Tam fakülte listesi sayfalarını ayırt etmek için skor (yüksek = daha çok farklı birim adı geçiyor).
+    Yalnızca '...Fakültesi' tekrarı tek başına yüksek skor vermez; farklı ipuçları (tıp, mühendislik vb.) ağırlıklıdır.
+    """
+    if not tf:
+        return 0
+    hints = (
+        "tip fakulte",
+        "eczacilik fakulte",
+        "muhendislik ve doga",
+        "muhendislik fakulte",
+        "saglik bilimleri fakulte",
+        "guzel sanatlar",
+        "hukuk fakulte",
+        "iletisim fakulte",
+        "dis hekimligi",
+        "beslenme ve diyetetik",
+        "fizyoterapi",
+        "hemsirelik",
+        "egitim bilimleri",
+        "yabanci diller",
+        "yuksekokul",
+        "onlisans",
+        "meslek yuksekokul",
+    )
+    hint_hits = sum(1 for h in hints if h in tf)
+    # Tekrarlayan "fakultesi" kelimesi en fazla +5 katkı; asıl ağırlık ipuçlarında.
+    return int(hint_hits * 14 + min(5, tf.count("fakultesi")))
+
+
 def retrieve_context(question: str, k: int = 5) -> str:
     """
     Scoring-based retrieval over PageChunk using ONLY Python logic (no embeddings).
@@ -568,6 +599,8 @@ def retrieve_context(question: str, k: int = 5) -> str:
             [
                 "fakülte",
                 "fakulte",
+                "fakülteler",
+                "fakulteler",
                 "mühendislik",
                 "muhendislik",
                 "tıp fakültesi",
@@ -580,6 +613,14 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 "saglik bilimleri",
                 "mühendislik ve doğa",
                 "muhendislik ve doga",
+                "güzel sanatlar",
+                "guzel sanatlar",
+                "hukuk fakültesi",
+                "hukuk fakultesi",
+                "diş hekimliği",
+                "dis hekimligi",
+                "üniversitemiz",
+                "universitemiz",
                 "lisans",
                 "önlisans",
                 "onlisans",
@@ -931,8 +972,17 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 x in text for x in ("fakülte", "fakulte", "tıp", "mühendislik", "eczacılık", "hemşirelik")
             ):
                 score += 115
+            # Tam fakülte listesinde çok sayfa var; tek fakülte URL'sine aşırı boost tüm sırayı eczacılıkta topluyor.
             if "eczacilik" in url or "eczacılık" in url:
-                score += 90
+                score += 28
+            blob_fac = _ascii_fold_turkish(f"{title} {section} {text}")
+            fr = _faculty_richness(blob_fac)
+            if fr >= 70:
+                score += min(220, fr + 40)
+            elif fr >= 42:
+                score += 85
+            elif fr >= 14:
+                score += 28
 
         if course_catalog_intent:
             st = (getattr(row, "source_type", None) or "").lower()
@@ -1073,7 +1123,8 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 picked: list = []
                 url_counts: dict[str, int] = {}
                 seen_pk: set[int] = set()
-                max_per_url = 2
+                # Liste sorusunda farklı URL'lerden parça al — aynı sitede 2 parça yerine 14 ayrı kaynak.
+                max_per_url = 1
 
                 def _take_row(row) -> bool:
                     pk = int(row.pk)
@@ -1098,25 +1149,26 @@ def retrieve_context(question: str, k: int = 5) -> str:
                         continue
                     picked.append(row)
                     seen_pk.add(int(row.pk))
+                # İlk eşleşen parça sık sık yalnızca 1–2 fakülte içerir; en zengin "genel liste" parçasını seç.
                 overview_row = None
-                for _s, _u, row in scored_pool[:120]:
+                overview_score = -1
+                overview_tuple: tuple[int, str, object] | None = None
+                for _s, _u, row in scored_pool[:280]:
                     uu = (row.url or "").rstrip("/").lower()
-                    tx = (row.chunk_text or "").lower()
-                    if uu.endswith("acibadem.edu.tr") and any(
-                        x in tx
-                        for x in (
-                            "tıp fakültesi",
-                            "tip fakultesi",
-                            "mühendislik",
-                            "muhendislik",
-                            "eczacılık",
-                            "eczacilik",
-                            "fakültesi",
-                            "fakultesi",
-                        )
+                    if not uu.endswith("acibadem.edu.tr"):
+                        continue
+                    tx = (row.chunk_text or "") + " " + (row.title or "")
+                    fr = _faculty_richness(_ascii_fold_turkish(tx.lower()))
+                    # ~3+ farklı birim ipucu (≈42+) olan parça genelde tam liste / akademik özet sayfasıdır.
+                    if fr < 42:
+                        continue
+                    if fr > overview_score or (
+                        fr == overview_score and overview_tuple is not None and _s > overview_tuple[0]
                     ):
-                        overview_row = row
-                        break
+                        overview_score = fr
+                        overview_tuple = (_s, _u, row)
+                if overview_tuple is not None:
+                    overview_row = overview_tuple[2]
                 if overview_row is not None and int(overview_row.pk) not in {int(r.pk) for r in picked}:
                     picked = [overview_row] + picked[: max(0, k - 1)]
                 top_rows = picked[:k]
@@ -1590,7 +1642,8 @@ def ask(request):
         if address_intent or cs_eng_q or campus_green_q:
             k_ctx = 8
         if dept_cat:
-            k_ctx = max(k_ctx, 14)
+            # Fakülte tam listesi için daha fazla parça + bağlam sınırı (model yine kısaltabilir).
+            k_ctx = max(k_ctx, 18)
         if cs_course_catalog_q:
             k_ctx = max(k_ctx, 14)
         t_retrieve = time.perf_counter()
@@ -1674,6 +1727,11 @@ def ask(request):
             (os.environ.get("ACU_COURSE_CATALOG_EMBED_AUGMENT") or "0").strip().lower()
             not in ("0", "false", "no")
         )
+        if dept_cat:
+            max_context_chars = max(
+                max_context_chars,
+                int(os.environ.get("DJANGO_DEPT_CATALOG_CONTEXT_CHARS", "9000")),
+            )
         if cs_course_catalog_q and embed_augment_on:
             max_context_chars = max(
                 max_context_chars,
@@ -1727,9 +1785,11 @@ SUSTAINABLE / GREEN CAMPUS (sürdürülebilir kampüs):
         dept_catalog_rules = ""
         if dept_cat:
             dept_catalog_rules = """
-FACULTY / DEPARTMENT OVERVIEW:
-- The user wants a list or overview of faculties, schools, or departments. Use **all** distinct programs/faculties mentioned across the entire Bağlam, not only the first chunk.
-- Group logically (e.g. by faculty/school) when possible. If the Bağlam clearly does not cover every school at the university, say briefly that the list comes from the retrieved pages and may be incomplete, but still list everything you can ground in the text.
+FACULTY / DEPARTMENT OVERVIEW (CRITICAL):
+- The user asked for faculties/schools/departments as a **list**. Scan the **entire** Bağlam (every chunk, including later blocks) for **every** distinct faculty, school, or vocational school name.
+- Output a **single comprehensive list** (bullet or comma-separated). Do **not** stop after two items if more names appear anywhere in the Bağlam.
+- Do not summarize down to "the main faculties only" — include every faculty/yüksekokul/meslek yüksekokul explicitly written in the text.
+- Group logically when helpful. If the Bağlam is incomplete vs the real university, say one short sentence that the list is only what appears in the retrieved excerpts — but still list **all** names present in the Bağlam.
 """
 
         prompt = f"""
