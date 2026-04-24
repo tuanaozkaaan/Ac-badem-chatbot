@@ -179,10 +179,11 @@ class Command(BaseCommand):
                 # Upsert strategy for local files:
                 # - delete any prior ScrapedPage with same pseudo_url (cascades to chunks)
                 # - recreate with updated content/hash
-                ScrapedPage.objects.filter(url=pseudo_url).delete()
+                ScrapedPage.objects.filter(url=pseudo_url, url_variant="").delete()
 
                 page = ScrapedPage.objects.create(
                     url=pseudo_url,
+                    url_variant="",
                     title=title,
                     section=section,
                     source_type=source_type,

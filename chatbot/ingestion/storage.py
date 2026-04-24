@@ -22,22 +22,24 @@ def upsert_page(
     source_type: str,
     content: str,
     content_hash: str,
+    url_variant: str = "",
 ) -> StoreResult:
+    variant = (url_variant or "").strip()[:128]
     existing_by_hash = ScrapedPage.objects.filter(content_hash=content_hash).first()
-    existing_by_url = ScrapedPage.objects.filter(url=url).first()
+    existing_row = ScrapedPage.objects.filter(url=url, url_variant=variant).first()
 
-    if existing_by_hash and (not existing_by_url or existing_by_hash.id != existing_by_url.id):
+    if existing_by_hash and (not existing_row or existing_by_hash.id != existing_row.id):
         return StoreResult(action="skipped_duplicate_hash", page_id=existing_by_hash.id, reason="duplicate_content")
 
     now = timezone.now()
-    if existing_by_url:
-        existing_by_url.title = title
-        existing_by_url.section = section
-        existing_by_url.source_type = source_type
-        existing_by_url.content = content
-        existing_by_url.content_hash = content_hash
-        existing_by_url.crawled_at = now
-        existing_by_url.save(
+    if existing_row:
+        existing_row.title = title
+        existing_row.section = section
+        existing_row.source_type = source_type
+        existing_row.content = content
+        existing_row.content_hash = content_hash
+        existing_row.crawled_at = now
+        existing_row.save(
             update_fields=[
                 "title",
                 "section",
@@ -48,10 +50,11 @@ def upsert_page(
                 "updated_at",
             ]
         )
-        return StoreResult(action="updated", page_id=existing_by_url.id)
+        return StoreResult(action="updated", page_id=existing_row.id)
 
     new_page = ScrapedPage.objects.create(
         url=url,
+        url_variant=variant,
         title=title,
         section=section,
         source_type=source_type,

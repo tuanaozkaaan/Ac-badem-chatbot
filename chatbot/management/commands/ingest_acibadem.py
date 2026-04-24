@@ -24,6 +24,12 @@ class Command(BaseCommand):
         parser.add_argument("--max-delay", type=float, default=2.0)
         parser.add_argument("--timeout", type=int, default=20)
         parser.add_argument("--enable-playwright-obs", action="store_true")
+        parser.add_argument(
+            "--obs-max-action-clicks",
+            type=int,
+            default=20,
+            help="OBS Playwright: tıklanacak en fazla aksiyon (0=postback keşfi kapalı).",
+        )
         parser.add_argument("--log-level", default="INFO")
 
     def handle(self, *args, **options):
@@ -39,6 +45,7 @@ class Command(BaseCommand):
             max_delay_seconds=options["max_delay"],
             timeout_seconds=options["timeout"],
             enable_playwright_for_obs=options["enable_playwright_obs"],
+            obs_max_action_clicks=options["obs_max_action_clicks"],
         )
         crawler = ResponsibleCrawler(config)
         stats = crawler.crawl()

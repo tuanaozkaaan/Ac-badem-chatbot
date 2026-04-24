@@ -7,6 +7,7 @@ import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import requests
 from django.db.models import Q
 from django.http import JsonResponse
@@ -368,6 +369,52 @@ def _cs_engineering_lisans_intent(question: str) -> bool:
     if "programcilik" in q and "muhendislik" not in q and "muhendisligi" not in q:
         return False
     return "muhendisligi" in q or "muhendislik" in q
+
+
+def _cs_engineering_course_catalog_intent(question: str) -> bool:
+    """
+    Kullanıcı somut ders listesi / sınıf / müfredat / kod istiyor; genel 'alan tanımı' değil.
+    Bu durumda repo özet dosyası (ce_block) enjekte edilmemeli — yalnızca DB/OBS chunk'ları.
+    """
+    if not _cs_engineering_lisans_intent(question):
+        return False
+    q = _ascii_fold_turkish(question or "")
+    needles = (
+        "1. sinif",
+        "2. sinif",
+        "3. sinif",
+        "4. sinif",
+        "birinci sinif",
+        "ikinci sinif",
+        "ucuncu sinif",
+        "dorduncu sinif",
+        "sinif ders",
+        "siniftaki ders",
+        "ders list",
+        "derslerin",
+        "dersleri",
+        "dersler",
+        "hangi ders",
+        "mufredat",
+        "müfredat",
+        "katalog",
+        "curriculum",
+        "syllabus",
+        "ders kodu",
+        "ders kod",
+        "kredi",
+        "akts",
+        "yariyil",
+        "yarıyıl",
+        "donem",
+        "dönem",
+        "bologna",
+        "program ciktisi",
+        "program çıktısı",
+        "ogrenme ciktisi",
+        "öğrenme çıktısı",
+    )
+    return any(n in q for n in needles)
 
 
 def _faculty_department_catalog_intent(question: str) -> bool:
@@ -1031,6 +1078,149 @@ def retrieve_context(question: str, k: int = 5) -> str:
     return "\n\n---\n\n".join(top).strip()
 
 
+_STRICT_RAG_NOT_FOUND = "BİLGİ BULUNAMADI (NO CONTEXT FROM DB)"
+
+
+@lru_cache(maxsize=1)
+def _sentence_transformer_for_model(model_name: str):
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name)
+
+
+def _embed_query_normalized(question: str, model_name: str) -> np.ndarray:
+    """Single-query embedding, L2-normalized (cosine similarity via dot product)."""
+    model = _sentence_transformer_for_model(model_name)
+    v = model.encode([question], convert_to_numpy=True, normalize_embeddings=True)
+    out = np.asarray(v[0], dtype=np.float32).ravel()
+    n = float(np.linalg.norm(out) + 1e-12)
+    return out / n
+
+
+def _retrieve_top_chunks_by_embedding(question: str, k: int) -> list[dict]:
+    """
+    Read-only retrieval: ChunkEmbedding.vector + PageChunk.chunk_text.
+    Rows must match EXPECTED_EMBEDDING_MODEL (or blank model name, same as document_loader).
+    """
+    from chatbot.models import ChunkEmbedding
+    from rag.document_loader import EXPECTED_EMBEDDING_MODEL
+
+    qv = _embed_query_normalized(question, EXPECTED_EMBEDDING_MODEL)
+    q_dim = int(qv.shape[0])
+
+    vectors: list[np.ndarray] = []
+    metas: list[dict] = []
+
+    for emb in ChunkEmbedding.objects.select_related("chunk").iterator(chunk_size=500):
+        ch = emb.chunk
+        if not ch:
+            continue
+        text = (ch.chunk_text or "").strip()
+        if not text:
+            continue
+        if emb.vector is None:
+            continue
+        name = (emb.embedding_model or "").strip()
+        if name and name != EXPECTED_EMBEDDING_MODEL:
+            continue
+        arr = np.asarray(emb.vector, dtype=np.float32).ravel()
+        if arr.size == 0 or arr.shape[0] != q_dim:
+            continue
+        nrm = float(np.linalg.norm(arr) + 1e-12)
+        vn = arr / nrm
+        vectors.append(vn.astype(np.float32, copy=False))
+        metas.append(
+            {
+                "chunk_id": int(ch.pk),
+                "url": (ch.url or "").strip(),
+                "title": (ch.title or "").strip(),
+                "text": text,
+            }
+        )
+
+    if not vectors:
+        return []
+
+    mat = np.stack(vectors, axis=0)
+    sims = mat @ qv
+    order = np.argsort(-sims)
+    top_idx = order[: max(1, min(int(k), len(order)))]
+
+    out: list[dict] = []
+    for i in top_idx:
+        row = dict(metas[int(i)])
+        row["score"] = float(sims[int(i)])
+        out.append(row)
+    return out
+
+
+def _strict_rag_verify_response(question: str, body: dict) -> JsonResponse:
+    """
+    Verification-only path: embedding retrieval from DB, no LLM, no Message/Conversation writes.
+    """
+    raw_k = body.get("strict_rag_top_k") or os.environ.get("ACU_STRICT_RAG_TOP_K") or 8
+    try:
+        k = int(raw_k)
+    except (TypeError, ValueError):
+        k = 8
+    k = max(1, min(k, 50))
+
+    chunks = _retrieve_top_chunks_by_embedding(question, k=k)
+    if not chunks:
+        return JsonResponse(
+            {
+                "strict_rag_verify": True,
+                "answer": _STRICT_RAG_NOT_FOUND,
+                "conversation_id": None,
+                "retrieved_chunks": [],
+            },
+            status=200,
+        )
+
+    retrieved_lines: list[str] = ["[RETRIEVED CHUNKS]"]
+    for i, c in enumerate(chunks, start=1):
+        retrieved_lines.append(f"<chunk {i}>")
+        retrieved_lines.append(f"score={c['score']:.4f}")
+        retrieved_lines.append(f"url={c['url']}")
+        retrieved_lines.append(f"title={c['title']}")
+        retrieved_lines.append(c["text"])
+        retrieved_lines.append("")
+
+    max_chars = int(os.environ.get("ACU_STRICT_RAG_ANSWER_MAX_CHARS", "6000"))
+    buf: list[str] = []
+    rem = max_chars
+    for c in chunks:
+        if rem <= 0:
+            break
+        t = c["text"].strip()
+        piece = t[:rem]
+        buf.append(piece)
+        rem -= len(piece)
+
+    answer_only = "\n\n".join(buf)
+    full_answer = "\n".join(retrieved_lines + ["[ANSWER BASED ON CONTEXT ONLY]", answer_only])
+
+    slim = [
+        {
+            "chunk_id": c["chunk_id"],
+            "score": c["score"],
+            "url": c["url"],
+            "title": c["title"],
+            "text": c["text"],
+        }
+        for c in chunks
+    ]
+
+    return JsonResponse(
+        {
+            "strict_rag_verify": True,
+            "answer": full_answer,
+            "conversation_id": None,
+            "retrieved_chunks": slim,
+        },
+        status=200,
+    )
+
 
 def ask_gemma(prompt: str) -> str:
     try:
@@ -1180,6 +1370,12 @@ def ask(request):
         return JsonResponse({"detail": "Question cannot be empty."}, status=400)
     question = unicodedata.normalize("NFC", question)
 
+    strict_rag = bool(body.get("strict_rag_verify")) or (
+        (os.environ.get("ACU_STRICT_RAG_VERIFY") or "").strip().lower() in ("1", "true", "yes")
+    )
+    if strict_rag:
+        return _strict_rag_verify_response(question, body)
+
     conv, conv_err = _resolve_conversation(body)
     if conv_err is not None:
         return conv_err
@@ -1228,11 +1424,14 @@ def ask(request):
             )
 
         cs_eng_q = _cs_engineering_lisans_intent(question)
+        cs_course_catalog_q = _cs_engineering_course_catalog_intent(question)
         dept_cat = _faculty_department_catalog_intent(question)
         k_ctx = 5
         if address_intent or cs_eng_q or campus_green_q:
             k_ctx = 8
         if dept_cat:
+            k_ctx = max(k_ctx, 14)
+        if cs_course_catalog_q:
             k_ctx = max(k_ctx, 14)
         context = retrieve_context(question, k=k_ctx)
         if address_intent:
@@ -1246,7 +1445,7 @@ def ask(request):
             context = re.sub(r"https?://\S+", "", context)
             context = re.sub(r" {2,}", " ", context)
             context = re.sub(r"\n{3,}", "\n\n", context).strip()
-        if cs_eng_q:
+        if cs_eng_q and not cs_course_catalog_q:
             ce_block = _ce_overview_context_block()
             ctx_body = (context or "").strip()
             context = f"{ce_block}\n\n{ctx_body}".strip() if ctx_body else ce_block
@@ -1292,9 +1491,19 @@ ADDRESS / LOCATION QUESTIONS:
 
         cs_eng_rules = ""
         if _cs_engineering_lisans_intent(question):
-            cs_eng_rules = """
+            if _cs_engineering_course_catalog_intent(question):
+                cs_eng_rules = """
+COMPUTER ENGINEERING — COURSE LIST / CURRICULUM QUESTION:
+- The user asked for **concrete courses, codes, credits, semesters, or year-level curriculum** for Bilgisayar Mühendisliği (lisans).
+- Answer **only** with information explicitly present in the Bağlam (retrieved chunks, e.g. OBS or official pages). List course names/codes/credits as they appear; you may group by semester/year **only if** the text supports it.
+- Do **not** answer with a generic encyclopedic description of computer engineering or "typical" university subjects not named in the Bağlam.
+- **Bilgisayar Programcılığı** (önlisans) is a different program: if the Bağlam is clearly about that program, say so briefly and do not present it as the engineering degree curriculum.
+- If the Bağlam does not contain the requested year/course list, say clearly (in the user's language) that this list was not found in the retrieved documents — do not invent course names or codes.
+"""
+            else:
+                cs_eng_rules = """
 COMPUTER ENGINEERING vs PROGRAMMING:
-- The context begins with a **general overview** of Bilgisayar Mühendisliği (lisans). Use it to explain the field, typical course areas, and labs/projects at a high level. State clearly that it is not the official course catalogue.
+- The context may begin with a **general overview** of Bilgisayar Mühendisliği (lisans). Use it only to explain the field, typical course areas, and labs/projects at a high level when the user did not ask for a specific course catalogue. State clearly that it is not the official course catalogue.
 - **Bilgisayar Programcılığı** (önlisans) is a different program: do not describe its lab pages or curriculum as if they were the engineering degree. If lower context is only associate programming, mention the distinction in one short sentence and base the engineering explanation on the overview block.
 - Do not invent specific course codes, credit counts, or prerequisite chains not stated in the context.
 """

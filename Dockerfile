@@ -24,6 +24,9 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && \
     pip install --default-timeout=1000 --no-cache-dir -r /app/requirements.txt
 
+# Playwright Chromium + sistem bağımlılıkları (slim imajda --with-deps gerekli)
+RUN python -m playwright install --with-deps chromium
+
 # Proje dosyalarını kopyala
 COPY . /app
 RUN chmod +x /app/docker/entrypoint.sh

@@ -9,7 +9,9 @@ class ScrapedPage(models.Model):
         (SOURCE_OBS, "OBS"),
     )
 
-    url = models.URLField(max_length=1024, unique=True, db_index=True)
+    url = models.URLField(max_length=1024, db_index=True)
+    # Aynı OBS URL'sinde postback ile farklı içerik: ana kayıt "", türetilmiş kayıtlar dolu (hash).
+    url_variant = models.CharField(max_length=128, blank=True, default="", db_index=True)
     title = models.CharField(max_length=512, blank=True)
     section = models.CharField(max_length=256, blank=True)
     source_type = models.CharField(max_length=16, choices=SOURCE_CHOICES, db_index=True)
@@ -21,9 +23,16 @@ class ScrapedPage(models.Model):
 
     class Meta:
         ordering = ("-crawled_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("url", "url_variant"),
+                name="uniq_scrapedpage_url_url_variant",
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"{self.source_type}: {self.url}"
+        suffix = f"#{self.url_variant}" if self.url_variant else ""
+        return f"{self.source_type}: {self.url}{suffix}"
 
 
 class PageChunk(models.Model):
