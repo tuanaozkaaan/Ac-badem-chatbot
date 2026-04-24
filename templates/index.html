@@ -57,11 +57,15 @@
       .app {
         display: grid;
         grid-template-columns: minmax(260px, 300px) 1fr;
+        /* minmax(0,1fr) + min-height:0 on children lets chat scroll inside viewport (not clip at body). */
+        grid-template-rows: minmax(0, 1fr);
         height: 100vh;
         height: 100dvh; /* stable on mobile + prevents jump */
-        min-height: 100vh;
+        min-height: 0;
+        max-height: 100dvh;
         position: relative;
         z-index: 1;
+        overflow: hidden;
       }
 
       .sidebar {
@@ -172,6 +176,8 @@
         display: flex;
         flex-direction: column;
         min-width: 0;
+        min-height: 0;
+        overflow: hidden;
       }
 
       .topbar {
@@ -196,11 +202,16 @@
         min-height: 0;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
       }
 
       .messages-wrap {
         flex: 1;
-        overflow: auto;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
         padding: 26px 18px 28px;
       }
 

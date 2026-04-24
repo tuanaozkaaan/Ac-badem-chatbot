@@ -35,6 +35,8 @@ services:
       - ./data:/app/data:ro
       # Host templates → container (edit index.html locally, refresh browser; no image rebuild)
       - ./templates:/app/templates:ro
+      # Host chatbot code → container (restart web after editing views.py; no image rebuild)
+      - ./chatbot:/app/chatbot
 
   db:
     image: postgres:16-alpine

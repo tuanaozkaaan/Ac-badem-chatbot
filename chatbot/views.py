@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import re
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,6 +25,66 @@ OFFICIAL_CAMPUS_ADDRESS_BLOCK = (
     "Telefon: 0216 500 44 44, 0216 576 50 76\n"
     "E-posta: info@acibadem.edu.tr\n"
 )
+
+
+def _ascii_fold_turkish(s: str) -> str:
+    """Lowercase + map Turkish letters so 'acıbadem' and 'acibadem' both match 'acibadem'."""
+    q = (s or "").lower()
+    return (
+        q.replace("ı", "i")
+        .replace("ğ", "g")
+        .replace("ü", "u")
+        .replace("ş", "s")
+        .replace("ö", "o")
+        .replace("ç", "c")
+        .replace("\u0307", "")
+    )
+
+
+def _wants_postal_address_detail(q_lower: str) -> bool:
+    if any(x in q_lower for x in ("address", "postal", "zip code", "zipcode")):
+        return True
+    if "adres" in q_lower:
+        return True
+    return any(
+        p in q_lower
+        for p in (
+            "tam adres",
+            "posta kodu",
+            "cadde",
+            "sokak",
+            "detayli adres",
+            "detaylı adres",
+            "tam konum",
+            "full address",
+        )
+    )
+
+
+def _canonical_campus_address_reply(is_tr: bool) -> str:
+    if is_tr:
+        return (
+            "Acıbadem Üniversitesi’nin posta tarzı kampüs adresi şöyledir:\n\n"
+            "Kerem Aydınlar Kampüsü, Kayışdağı Cad. No:32, 34752 Ataşehir/İstanbul\n\n"
+            "Telefon: 0216 500 44 44, 0216 576 50 76\n"
+            "E-posta: info@acibadem.edu.tr"
+        )
+    return (
+        "The official postal-style campus address is:\n\n"
+        "Kerem Aydınlar Campus, Kayışdağı Avenue No:32, 34752 Ataşehir, Istanbul, Turkiye\n\n"
+        "Phone: +90 216 500 44 44, +90 216 576 50 76\n"
+        "Email: info@acibadem.edu.tr"
+    )
+
+
+def _strip_urls_plain_text(answer: str) -> str:
+    """Remove hyperlinks so answers stay plain text (markdown + bare URLs)."""
+    s = (answer or "").strip()
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    s = re.sub(r"https?://\S+", "", s)
+    s = re.sub(r"[ \t]+\n", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return re.sub(r" {2,}", " ", s).strip()
 
 
 _TR_STOPWORDS = {
@@ -64,17 +126,26 @@ _TR_STOPWORDS = {
 
 
 def _looks_acibadem_related(question: str) -> bool:
-    q = (question or "").lower()
+    q = _ascii_fold_turkish(question or "")
     return any(
         k in q
         for k in (
-            "acıbadem",
             "acibadem",
-            "acıbadem üniversitesi",
             "acibadem universitesi",
             "acibadem university",
         )
     )
+
+
+def _thread_user_text_blob(conv, limit: int = 14) -> str:
+    from chatbot.models import Message
+
+    qs = Message.objects.filter(conversation=conv, role=Message.ROLE_USER).order_by("-id")[:limit]
+    return " ".join((m.content or "") for m in qs)
+
+
+def _thread_suggests_acibadem_topic(conv) -> bool:
+    return _looks_acibadem_related(_thread_user_text_blob(conv))
 
 
 def _detect_language(question: str) -> str:
@@ -215,6 +286,11 @@ def retrieve_context(question: str, k: int = 5) -> str:
     chunks up to that cap are used instead.
     """
     keywords = _extract_keywords(question)
+    # Question words widen OR-matches without helping entity questions ("kimdir" on half the site).
+    lookup_noise = frozenset(
+        {"kimdir", "nedir", "midir", "nerede", "nasıl", "nasil", "hangi", "neden", "niçin", "nicin", "kim", "ne"}
+    )
+    keywords = [k for k in keywords if k not in lookup_noise]
     q_lower = (question or "").lower()
 
     # Multi-word phrases (not produced by whitespace tokenization) improve DB icontains narrowing.
@@ -597,7 +673,10 @@ def retrieve_context(question: str, k: int = 5) -> str:
 
             scored_all.sort(key=lambda x: (x[0], x[1]), reverse=True)
             top_score = scored_all[0][0] if scored_all else 0
-            if top_score <= 0:
+            # Names / short queries often get low or negative scores after penalties; still return
+            # best-effort chunks so "kimdir?" style questions can use weak DB hits.
+            weak_hits_ok = any(len((kw or "").strip()) >= 3 for kw in keywords[:8])
+            if top_score <= 0 and not weak_hits_ok:
                 return ""
 
             logger.info("retrieve_context(db): question=%r candidates=%s", question, len(scored_all))
@@ -775,6 +854,7 @@ def ask(request):
     question = (body.get("question") or "").strip()
     if not question:
         return JsonResponse({"detail": "Question cannot be empty."}, status=400)
+    question = unicodedata.normalize("NFC", question)
 
     conv, conv_err = _resolve_conversation(body)
     if conv_err is not None:
@@ -796,22 +876,25 @@ def ask(request):
             else "I couldn't find clear information about this."
         )
 
-        q_lower = question.lower()
+        # ASCII-fold so Turkish chars and .lower() quirks cannot skip the postal shortcut.
+        q_fold = _ascii_fold_turkish(question)
         address_intent = any(
-            t in q_lower
+            t in q_fold
             for t in (
                 "adres",
                 "address",
-                "kampüs",
                 "kampus",
                 "campus",
                 "konum",
                 "location",
-                "ulaşım",
                 "ulasim",
                 "nerede",
             )
         )
+        if _wants_postal_address_detail(q_fold) and (
+            "acibadem" in q_fold or _thread_suggests_acibadem_topic(conv)
+        ):
+            return _persist_assistant_reply(conv, _canonical_campus_address_reply(is_tr))
 
         context = retrieve_context(question, k=8 if address_intent else 5)
         if address_intent:
@@ -821,32 +904,24 @@ def ask(request):
                 if ctx_body
                 else OFFICIAL_CAMPUS_ADDRESS_BLOCK
             )
-        # If we cannot retrieve any relevant context and the query doesn't look on-topic,
-        # avoid hallucinations by refusing politely.
-        if not context and not _looks_acibadem_related(question):
-            return _persist_assistant_reply(
-                conv,
-                (
-                    "Ben Acıbadem Üniversitesi odaklı bir asistanım."
-                    if is_tr
-                    else "I'm an assistant focused on Acibadem University."
-                ),
-            )
-
+            # Small models latch onto random URLs from retrieved chunks; keep plain text for the model.
+            context = re.sub(r"https?://\S+", "", context)
+            context = re.sub(r" {2,}", " ", context)
+            context = re.sub(r"\n{3,}", "\n\n", context).strip()
         if not context:
             return _persist_assistant_reply(
                 conv,
                 (
                     (
-                        "Bu konuda güvenilir bilgi bulamadım. "
-                        "Veritabanımda ilgili içerik yoksa uydurma bilgi veremem. "
-                        "Resmî web sitesindeki İletişim/Ulaşım bölümünden doğrulayabilirsin."
+                        "Bu soru için veritabanımda eşleşen metin bulamadım; doğrulanmamış bilgi uydurmam. "
+                        "Sorunuzu Acıbadem Üniversitesi ile ilgili anahtar kelimelerle (bölüm, program, kişi adı, konu) "
+                        "yeniden sorabilir veya resmî web sitesinden doğrulayabilirsiniz."
                     )
                     if is_tr
                     else (
-                        "I couldn't find reliable information in my data. "
-                        "If it's not in my database, I can't make it up. "
-                        "Please verify on the official website's Contact/Transportation pages."
+                        "I could not find matching text in my database for this question, so I cannot invent facts. "
+                        "Try rephrasing with Acıbadem University–related keywords (department, program, person, topic) "
+                        "or verify on the official website."
                     )
                 ),
             )
@@ -863,6 +938,7 @@ def ask(request):
             address_rules = """
 ADDRESS / LOCATION QUESTIONS:
 - The context begins with an official postal-style campus block from the university's Contact/Transportation page. When the user asks for the school/campus address or location, state that full address clearly in your first sentence or first short paragraph (street, number, postal code, district, city).
+- Do NOT answer with hyperlinks, markdown links, or bare URLs. Do not tell the user to "go to this link". Use plain text only.
 - If additional context below describes metro/bus routes or a building/floor, add that after the postal address; do not replace the postal address with an indoor office line alone.
 - Prefer the official postal-style campus address when it appears in the context (district, city, street/avenue, building number, postal code if any).
 - If the context mixes a general campus address with an indoor office location (e.g. a unit on a specific floor), lead with the postal/campus address; mention the office only as secondary detail from the same context.
@@ -923,6 +999,8 @@ Kullanıcı sorusu:
         else:
             if (not _looks_english(answer)) or _looks_turkish(answer):
                 answer = _translate_answer(answer, "en")
+        if address_intent:
+            answer = _strip_urls_plain_text(answer)
         return _persist_assistant_reply(conv, answer)
     except Exception:
         logger.exception("Failed to answer question in /ask")
