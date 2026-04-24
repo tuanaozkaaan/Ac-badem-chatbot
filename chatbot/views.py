@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 # Crawled chunks often omit the postal block; official page:
 # https://acibadem.edu.tr/kayit/iletisim/ulasim
+ACIBADEM_GENERAL_FOCUS_BLOCK = (
+    "[Genel tanıtım — odak]\n"
+    "Acıbadem Üniversitesi kökleri itibarıyla sağlık bilimleri, tıp, hemşirelik, eczacılık ve benzeri alanlarda "
+    "güçlü bir vakıf üniversitesidir; mühendislik ve diğer fakülteler program yelpazesinin parçasıdır. "
+    "Genel 'üniversite nedir / kısa bilgi' sorularında tek bir mühendislik bölümünü veya tek kişiyi "
+    "üniversitenin ana kimliği gibi sunma; önce sağlık ve çok disiplinli yapıyı özetle.\n"
+)
+
 OFFICIAL_CAMPUS_ADDRESS_BLOCK = (
     "[Resmî kampüs adresi ve iletişim — Acıbadem Üniversitesi; "
     "kaynak: acibadem.edu.tr/kayit/iletisim/ulasim]\n"
@@ -446,10 +454,77 @@ def _cs_engineering_course_catalog_intent(question: str) -> bool:
     return any(n in q for n in needles)
 
 
+def _asks_subunits_of_named_faculty(question: str) -> bool:
+    """
+    Tek bir fakülte/yüksekokul adı verilmiş ve altındaki bölüm/program soruluyorsa True.
+    Bu durumda _faculty_department_catalog_intent açılmamalı — yoksa tüm üniversite OR araması
+    ve ağır dept_catalog yolu tetiklenir (dakikalarca sürebilir, bağlam da dağılır).
+    """
+    qf = _ascii_fold_turkish(question or "")
+    if "fakultes" not in qf:
+        return False
+    if not any(
+        x in qf
+        for x in (
+            "hangi bolum",
+            "hangi program",
+            "nelerdir",
+            "icerir",
+            "hangi lisans",
+            "hangi onlisans",
+        )
+    ):
+        return False
+    units = (
+        "muhendislik ve doga",
+        "tip fakulte",
+        "eczacilik fakulte",
+        "saglik bilimleri fakulte",
+        "guzel sanatlar",
+        "hukuk fakulte",
+        "iletisim fakulte",
+        "dis hekimligi",
+        "egitim bilimleri fakulte",
+        "fen edebiyat",
+        "yabanci diller",
+    )
+    return any(u in qf for u in units)
+
+
+def _general_acibadem_intro_intent(question: str) -> bool:
+    """
+    'Üniversite hakkında kısa bilgi' gibi genel tanıtım — BM/tek programa kilitlenmesin diye retrieval + prompt ayarı.
+    """
+    qf = _ascii_fold_turkish(question or "")
+    if "acibadem" not in qf and "aci badem" not in qf:
+        return False
+    if _cs_engineering_lisans_intent(question) or _cs_engineering_course_catalog_intent(question):
+        return False
+    if "bilgisayar" in qf or "computer" in qf or "muhendisligi" in qf:
+        return False
+    hints = (
+        "hakkinda",
+        "bilgi ver",
+        "kisaca",
+        "kisa bilgi",
+        "nedir",
+        "tanit",
+        "tanitir misin",
+        "genel bilgi",
+        "universiteyi anlat",
+        "universite hakkinda",
+        "universitesi hakkinda",
+        "hakkinda bilgi",
+    )
+    return any(h in qf for h in hints)
+
+
 def _faculty_department_catalog_intent(question: str) -> bool:
     """Broad questions asking which faculties/departments/programs exist at the university."""
     ql = (question or "").lower()
     qf = _ascii_fold_turkish(question or "")
+    if _asks_subunits_of_named_faculty(question):
+        return False
     needles = (
         "hangi bölüm",
         "hangi bolum",
@@ -539,6 +614,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
     course_catalog_intent = _cs_engineering_course_catalog_intent(question)
     green_campus_q = _green_or_sustainable_campus_question(question)
     dept_catalog_intent = _faculty_department_catalog_intent(question)
+    general_intro_intent = _general_acibadem_intro_intent(question)
 
     # Multi-word phrases (not produced by whitespace tokenization) improve DB icontains narrowing.
     extra_lookup_terms: list[str] = []
@@ -624,6 +700,39 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 "lisans",
                 "önlisans",
                 "onlisans",
+            ]
+        )
+    if _asks_subunits_of_named_faculty(question):
+        qfx = _ascii_fold_turkish(question or "")
+        if "muhendislik ve doga" in qfx:
+            extra_lookup_terms.extend(
+                [
+                    "mühendislik ve doğa bilimleri",
+                    "muhendislik ve doga bilimleri",
+                    "muhendislik ve doga",
+                ]
+            )
+        if "tip fakulte" in qfx:
+            extra_lookup_terms.extend(["tıp fakültesi", "tip fakultesi"])
+        if "eczacilik fakulte" in qfx:
+            extra_lookup_terms.extend(["eczacılık fakültesi", "eczacilik fakultesi"])
+        if "saglik bilimleri fakulte" in qfx:
+            extra_lookup_terms.extend(["sağlık bilimleri", "saglik bilimleri"])
+    if general_intro_intent:
+        extra_lookup_terms.extend(
+            [
+                "sağlık bilimleri",
+                "saglik bilimleri",
+                "tıp fakültesi",
+                "tip fakultesi",
+                "vakıf üniversitesi",
+                "vakif universitesi",
+                "Acıbadem Sağlık",
+                "hemşirelik",
+                "hemsirelik",
+                "eczacılık",
+                "kuruluş",
+                "kurulus",
             ]
         )
 
@@ -983,6 +1092,37 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 score += 85
             elif fr >= 14:
                 score += 28
+
+        if general_intro_intent:
+            blob_gi = _ascii_fold_turkish(f"{title} {section} {text} {url}")
+            u = url.lower()
+            if any(
+                x in u
+                for x in (
+                    "bilgisayar-muhendisligi",
+                    "bilgisayar_muhendisligi",
+                    "computer-engineering",
+                )
+            ):
+                score -= 280
+            if "bilgisayar" in title and "muhendis" in _ascii_fold_turkish(title):
+                score -= 160
+            if any(
+                x in blob_gi
+                for x in (
+                    "saglik bilimleri",
+                    "tip fakulte",
+                    "tip fakültesi",
+                    "eczacilik",
+                    "hemsirelik",
+                    "dis hekimligi",
+                    "vakif universitesi",
+                    "kurulus",
+                    "saglik grubu",
+                    "hastane",
+                )
+            ):
+                score += 120
 
         if course_catalog_intent:
             st = (getattr(row, "source_type", None) or "").lower()
@@ -1431,8 +1571,9 @@ def ask_gemma(prompt: str) -> str:
     try:
         base_url = (os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
         model = (os.environ.get("OLLAMA_MODEL") or "gemma2:2b").strip()
-        # Keep responses fast/compact by default; can be overridden via env.
-        num_predict = int(os.environ.get("OLLAMA_NUM_PREDICT", "256"))
+        # Uzun liste/müfredat için yüksek tutulabilir; .env: OLLAMA_NUM_PREDICT (üst sınır 2048).
+        raw_np = int(os.environ.get("OLLAMA_NUM_PREDICT", "384"))
+        num_predict = max(64, min(raw_np, 2048))
         temperature = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
         # Keep model loaded in VRAM/RAM between requests (e.g. "10m", "0" to unload). Empty = omit.
         keep_alive = (os.environ.get("OLLAMA_KEEP_ALIVE") or "").strip()
@@ -1469,8 +1610,8 @@ def ask_gemma(prompt: str) -> str:
     except requests.Timeout:
         return (
             f"Gemma error: Ollama {ollama_http_timeout}s içinde yanıt vermedi (HTTP zaman aşımı). "
-            "docker compose ps ollama; gerekirse .env: OLLAMA_HTTP_TIMEOUT=480 veya OLLAMA_NUM_PREDICT=160 "
-            "(daha kısa cevap = daha az bekleme). İlk istekte model RAM'e yüklenir, sonrakiler genelde hızlanır."
+            "docker compose ps ollama; gerekirse .env: OLLAMA_HTTP_TIMEOUT=480. "
+            "İlk istekte model RAM'e yüklenir, sonrakiler genelde hızlanır."
         )
     except Exception as e:
         return f"Gemma error: {str(e)}"
@@ -1526,16 +1667,16 @@ def _append_followup_invite(text: str, *, is_tr: bool, conv_id: int, question: s
     h = int(hashlib.sha256(salt.encode("utf-8", errors="replace")).hexdigest(), 16)
     if is_tr:
         variants = [
-            "\n\n— Başka ne sormak istersin? Örneğin fakülteler, başvuru takvimi, burslar veya kampüs yaşamı hakkında sorabilirsin.",
-            "\n\n— İstersen devam edebilirsin: programlar, staj veya Erasmus, iletişim ya da ders planı gibi konularda da yardımcı olabilirim.",
-            "\n\n— Aklında başka bir konu var mı? Bölümler, akademik takvim veya yerleşke ve ulaşım hakkında da sorabilirsin.",
-            "\n\n— Bir sonraki sorun ne olsun istersin? Kayıt şartları, yurt, sosyal tesisler veya iletişim kanalları üzerine de konuşabiliriz.",
+            "\n\n— Başvuru, burs veya kampüs için de sorabilirsin.",
+            "\n\n— Program, staj veya iletişim hakkında devam edebilirsin.",
+            "\n\n— Akademik takvim veya ulaşım için de sorabilirsin.",
+            "\n\n— Kayıt veya yurt konularında da sorabilirsin.",
         ]
     else:
         variants = [
-            "\n\n— What would you like to ask next? You could try faculties, admissions timeline, scholarships, or campus life.",
-            "\n\n— Want to go deeper? Programs, internships or exchange, contact options, or the academic calendar are good topics too.",
-            "\n\n— Anything else on your mind about Acıbadem University? Housing, transport, or student services, for example.",
+            "\n\n— Ask about admissions, scholarships, or campus if you like.",
+            "\n\n— Programs, internships, or contact — happy to help.",
+            "\n\n— Academic calendar or transport — just ask.",
         ]
     return t + variants[h % len(variants)]
 
@@ -1638,9 +1779,15 @@ def ask(request):
         cs_eng_q = _cs_engineering_lisans_intent(question)
         cs_course_catalog_q = _cs_engineering_course_catalog_intent(question)
         dept_cat = _faculty_department_catalog_intent(question)
+        sub_fac_units = _asks_subunits_of_named_faculty(question)
+        general_intro = _general_acibadem_intro_intent(question)
         k_ctx = 5
         if address_intent or cs_eng_q or campus_green_q:
             k_ctx = 8
+        if general_intro:
+            k_ctx = max(k_ctx, 7)
+        if sub_fac_units:
+            k_ctx = max(k_ctx, 10)
         if dept_cat:
             # Fakülte tam listesi için daha fazla parça + bağlam sınırı (model yine kısaltabilir).
             k_ctx = max(k_ctx, 18)
@@ -1649,6 +1796,13 @@ def ask(request):
         t_retrieve = time.perf_counter()
         context = retrieve_context(question, k=k_ctx)
         logger.info("/ask retrieve_context done in %.2fs", time.perf_counter() - t_retrieve)
+        if general_intro:
+            ctx0 = (context or "").strip()
+            context = (
+                f"{ACIBADEM_GENERAL_FOCUS_BLOCK}\n\n{ctx0}".strip()
+                if ctx0
+                else ACIBADEM_GENERAL_FOCUS_BLOCK.strip()
+            )
         if address_intent:
             ctx_body = (context or "").strip()
             context = (
@@ -1721,8 +1875,7 @@ def ask(request):
                 question=question,
             )
 
-        # Truncate context to keep latency manageable on small local models.
-        max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "4500"))
+        max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "5200"))
         embed_augment_on = (
             (os.environ.get("ACU_COURSE_CATALOG_EMBED_AUGMENT") or "0").strip().lower()
             not in ("0", "false", "no")
@@ -1730,12 +1883,12 @@ def ask(request):
         if dept_cat:
             max_context_chars = max(
                 max_context_chars,
-                int(os.environ.get("DJANGO_DEPT_CATALOG_CONTEXT_CHARS", "9000")),
+                int(os.environ.get("DJANGO_DEPT_CATALOG_CONTEXT_CHARS", "10000")),
             )
         if cs_course_catalog_q and embed_augment_on:
             max_context_chars = max(
                 max_context_chars,
-                int(os.environ.get("DJANGO_COURSE_CATALOG_CONTEXT_CHARS", "12000")),
+                int(os.environ.get("DJANGO_COURSE_CATALOG_CONTEXT_CHARS", "14000")),
             )
         if len(context) > max_context_chars:
             context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
@@ -1785,15 +1938,28 @@ SUSTAINABLE / GREEN CAMPUS (sürdürülebilir kampüs):
         dept_catalog_rules = ""
         if dept_cat:
             dept_catalog_rules = """
-FACULTY / DEPARTMENT OVERVIEW (CRITICAL):
-- The user asked for faculties/schools/departments as a **list**. Scan the **entire** Bağlam (every chunk, including later blocks) for **every** distinct faculty, school, or vocational school name.
-- Output a **single comprehensive list** (bullet or comma-separated). Do **not** stop after two items if more names appear anywhere in the Bağlam.
-- Do not summarize down to "the main faculties only" — include every faculty/yüksekokul/meslek yüksekokul explicitly written in the text.
-- Group logically when helpful. If the Bağlam is incomplete vs the real university, say one short sentence that the list is only what appears in the retrieved excerpts — but still list **all** names present in the Bağlam.
+FACULTY / DEPARTMENT OVERVIEW:
+- The user wants faculties/schools/departments. Use **all** distinct names that appear across the Bağlam (scan every chunk).
+- You may answer at length if needed to list everything found. Prefer bullets or clear grouping.
+- If the Bağlam is incomplete vs the real university, say briefly that the list is only what appears in the retrieved text.
+"""
+
+        general_intro_rules = ""
+        if general_intro:
+            general_intro_rules = """
+GENERAL UNIVERSITY INTRO:
+- The user asked for a **broad** overview of Acıbadem University. Lead with its identity as a foundation university with major strengths in **health sciences, medicine, nursing, pharmacy/dentistry**, and links to healthcare/clinical training when the Bağlam supports this.
+- Do **not** center the answer on Computer Engineering, data science, AI, or one department head unless the user explicitly asked about that program.
+- Engineering and other faculties may appear as part of a balanced picture, not as the main headline.
 """
 
         prompt = f"""
 You are a helpful university assistant.
+
+OUTPUT (critical):
+- **Always** write a real answer when the Bağlam contains any information related to the question — do not return an empty reply.
+- Length is flexible: short answers for simple questions; longer answers when listing many items or explaining details from the Bağlam.
+- Do not refuse only because a complete answer would be long.
 
 LANGUAGE RULES:
 - Detect the language of the user's question.
@@ -1811,6 +1977,7 @@ SCOPE / PROGRAM NAME:
 - Never invent a person or title that is not supported by the context.
 {green_campus_rules}
 {dept_catalog_rules}
+{general_intro_rules}
 {cs_eng_rules}
 {address_rules}
 TOPIC USE (always apply):
@@ -1845,6 +2012,20 @@ Kullanıcı sorusu:
         t_llm = time.perf_counter()
         answer = ask_gemma(prompt)
         logger.info("/ask ask_gemma (primary) done in %.2fs", time.perf_counter() - t_llm)
+        if not (answer or "").strip() and len((context or "").strip()) > 80:
+            refill = (
+                "Aşağıdaki Bağlamı kullanarak soruyu Türkçe yanıtla. Boş bırakma; en az 2 anlamlı cümle yaz.\n\n"
+                f"Bağlam:\n{context[:4000]}\n\nSoru:\n{question}"
+                if is_tr
+                else (
+                    "Answer the question in English using the context below. Do not leave the answer empty; "
+                    "at least 2 meaningful sentences.\n\n"
+                    f"Context:\n{context[:4000]}\n\nQuestion:\n{question}"
+                )
+            )
+            t_ref = time.perf_counter()
+            answer = (ask_gemma(refill) or "").strip()
+            logger.info("/ask ask_gemma empty-refill done in %.2fs", time.perf_counter() - t_ref)
         ctx_lc = (context or "").lower()
         if campus_green_q and ctx_lc and any(
             w in ctx_lc
@@ -1864,12 +2045,12 @@ Kullanıcı sorusu:
         ):
             if _answer_is_stock_no_info(answer):
                 retry = (
-                    "Aşağıdaki bağlamdan YALNIZCA yazılanları kullanarak soruyu Türkçe, 4–7 cümle ile yanıtla. "
+                    "Aşağıdaki bağlamdan YALNIZCA yazılanları kullanarak soruyu Türkçe, **3–6 kısa cümle** ile yanıtla. "
                     "Uydurma bilgi ekleme. Bağlamda sürdürülebilirlik, çevre veya kampüsle ilgili ne varsa açıkla.\n\n"
                     f"Bağlam:\n{context[:4000]}\n\nSoru: {question}"
                     if is_tr
                     else (
-                        "Answer the question in English using ONLY the context below (4–7 sentences). "
+                        "Answer in English using ONLY the context below (**3–6 short sentences**). "
                         "Do not invent facts. Explain any sustainability, environment, or campus-related wording.\n\n"
                         f"Context:\n{context[:4000]}\n\nQuestion: {question}"
                     )
@@ -1882,13 +2063,13 @@ Kullanıcı sorusu:
         ):
             retry_gen = (
                 "Kullanıcının sorusu ile aşağıdaki bağlam arasında anlamlı kelime örtüşmesi var. "
-                "Bağlamdan YALNIZCA desteklenen bilgileri kullanarak Türkçe, akıcı bir yanıt yaz (en az 3 cümle). "
+                "Bağlamdan YALNIZCA desteklenen bilgileri kullanarak Türkçe, **3–6 kısa cümle** yaz. "
                 "Uydurma. Bağlam gerçekten cevap vermiyorsa tek cümlede 'Bu konuda elimde net bir bilgi bulunamadı.' de.\n\n"
                 f"Bağlam:\n{context[:4200]}\n\nSoru: {question}"
                 if is_tr
                 else (
                     "There is lexical overlap between the question and the context below. "
-                    "Write a helpful answer in English using ONLY supported facts from the context (at least 3 sentences). "
+                    "Write a helpful answer in English using ONLY supported facts (**3–6 short sentences**). "
                     "Do not invent. If the context truly does not support an answer, output only: "
                     "I couldn't find clear information about this.\n\n"
                     f"Context:\n{context[:4200]}\n\nQuestion: {question}"
