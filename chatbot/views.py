@@ -3,6 +3,7 @@ import heapq
 import json
 import logging
 import os
+import time
 import re
 import unicodedata
 from functools import lru_cache
@@ -302,9 +303,32 @@ def _looks_turkish(text: str) -> bool:
         return False
     if any(ch in t for ch in ("ç", "ğ", "ı", "ö", "ş", "ü")):
         return True
-    # Common Turkish function words
-    tr_words = (" ve ", " ile ", " için ", " adres", " üniversite", " kampüs", " istanbul", " türkiye", " nedir", " nerede")
-    hits = sum(1 for w in tr_words if w in f" {t} ")
+    tf = _ascii_fold_turkish(t)
+    # Model çıktısı sıkça ASCII (i̇→i); tek " ve " ile kaçırmayıp gereksiz çeviri / ikinci Ollama çağrısı tetiklenmesin.
+    strong = (
+        " ogrenci ",
+        "ogrenci ",
+        " universite",
+        "universitesi",
+        " fakulte",
+        " bolum",
+        " iletisim",
+        " telefon",
+        " e-posta",
+        " eposta",
+        " adres",
+        " kampus",
+        " istanbul",
+        " turkiye",
+        " icin ",
+        " bilgi ",
+        " basvuru",
+        " kayit",
+    )
+    if any(s in tf for s in strong):
+        return True
+    tr_words = (" ve ", " ile ", " icin ", " adres", " universite", " kampus", " istanbul", " turkiye", " nedir", " nerede")
+    hits = sum(1 for w in tr_words if w in f" {tf} ")
     return hits >= 2
 
 
@@ -470,7 +494,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
     Candidate chunks are scored (including negative/zero), then top *k* by score are returned.
     To avoid scanning the entire table on large ingests, candidates are narrowed with
     `icontains` OR filters on keywords (plus a short prefix for long tokens) and capped by
-    `RETRIEVE_MAX_CANDIDATES` (default 1800). If no keyword matches, the most recently updated
+    `RETRIEVE_MAX_CANDIDATES` (default 1000). If no keyword matches, the most recently updated
     chunks up to that cap are used instead.
     """
     keywords = _extract_keywords(question)
@@ -691,10 +715,17 @@ def retrieve_context(question: str, k: int = 5) -> str:
             return 0
         return hay.count(needle)
 
+    # Uzun sayfa metinlerinde her satırda tüm gövdeyi skorlamak CPU'da onlarca sn sürebilir; eşleştirme için önek yeter.
+    _score_body_limit = int(os.environ.get("RETRIEVE_CHUNK_SCORE_CHARS", "5500"))
+    _score_body_limit = max(2800, min(_score_body_limit, 120_000))
+
     def _score_row(row) -> int:
         title = (row.title or "").lower()
         section = (row.section or "").lower()
-        text = (row.chunk_text or "").lower()
+        raw_body = row.chunk_text or ""
+        if len(raw_body) > _score_body_limit:
+            raw_body = raw_body[:_score_body_limit]
+        text = raw_body.lower()
         url = (getattr(row, "url", None) or "").lower()
 
         score = 0
@@ -941,7 +972,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
 
         if PageChunk.objects.exists():
             # 6000 satırı tamamen RAM'de skorlamak yavaş; varsayılanı düşük tut (env ile artırılabilir).
-            max_candidates = max(1, int(os.environ.get("RETRIEVE_MAX_CANDIDATES", "1800")))
+            max_candidates = max(1, int(os.environ.get("RETRIEVE_MAX_CANDIDATES", "1000")))
             base_qs = PageChunk.objects.only(
                 "chunk_text", "title", "section", "url", "source_type", "updated_at"
             ).order_by("-updated_at")
@@ -1562,7 +1593,9 @@ def ask(request):
             k_ctx = max(k_ctx, 14)
         if cs_course_catalog_q:
             k_ctx = max(k_ctx, 14)
+        t_retrieve = time.perf_counter()
         context = retrieve_context(question, k=k_ctx)
+        logger.info("/ask retrieve_context done in %.2fs", time.perf_counter() - t_retrieve)
         if address_intent:
             ctx_body = (context or "").strip()
             context = (
@@ -1749,7 +1782,9 @@ Kullanıcı sorusu:
  
  Cevap (yalnızca bağlama dayanarak):
 """
+        t_llm = time.perf_counter()
         answer = ask_gemma(prompt)
+        logger.info("/ask ask_gemma (primary) done in %.2fs", time.perf_counter() - t_llm)
         ctx_lc = (context or "").lower()
         if campus_green_q and ctx_lc and any(
             w in ctx_lc
@@ -1810,14 +1845,18 @@ Kullanıcı sorusu:
                 is_tr=is_tr,
                 question=question,
             )
-        # Enforce answer language: if model drifts (or mixes languages), translate back
-        # without adding facts. Be strict for EN questions (UI expectation).
+        # Dil düzeltmesi: ikinci bir tam Ollama çağrısı dakikalarca sürebilir. Türkçe soruda yalnızca
+        # cevap belirgin İngilizceyse çevir (ASCII Türkçe yanıtı yanlışlıkla İngilizce sanma).
         if is_tr:
-            if (not _looks_turkish(answer)) or _looks_english(answer):
+            if _looks_english(answer):
+                t_tr = time.perf_counter()
                 answer = _translate_answer(answer, "tr")
+                logger.info("/ask translate->tr done in %.2fs", time.perf_counter() - t_tr)
         else:
-            if (not _looks_english(answer)) or _looks_turkish(answer):
+            if _looks_turkish(answer) and not _looks_english(answer):
+                t_tr = time.perf_counter()
                 answer = _translate_answer(answer, "en")
+                logger.info("/ask translate->en done in %.2fs", time.perf_counter() - t_tr)
         if address_intent:
             answer = _strip_urls_plain_text(answer)
         return _persist_assistant_reply(
