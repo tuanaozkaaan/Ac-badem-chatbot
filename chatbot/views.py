@@ -5,6 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import requests
+from django.db.models import Q
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
@@ -196,8 +197,11 @@ def retrieve_context(question: str, k: int = 5) -> str:
       - chunk_text: lowest
     Also applies intent-based boosts/penalties for admissions vs internship queries.
 
-    All chunks are scored (including negative/zero). Top *k* by score are returned whenever
-    the database has rows — no filtering by score > 0.
+    Candidate chunks are scored (including negative/zero), then top *k* by score are returned.
+    To avoid scanning the entire table on large ingests, candidates are narrowed with
+    `icontains` OR filters on keywords (plus a short prefix for long tokens) and capped by
+    `RETRIEVE_MAX_CANDIDATES` (default 6000). If no keyword matches, the most recently updated
+    chunks up to that cap are used instead.
     """
     keywords = _extract_keywords(question)
     q_lower = (question or "").lower()
@@ -390,16 +394,47 @@ def retrieve_context(question: str, k: int = 5) -> str:
 
         return score
 
-    # 1) Prefer DB chunks if available — score every row, then take top k by score.
+    # 1) Prefer DB chunks if available — score a bounded candidate set, then take top k by score.
     try:
         from chatbot.models import PageChunk
 
         if PageChunk.objects.exists():
-            scored_all: list[tuple[int, object, object]] = []
-            qs = PageChunk.objects.only(
+            max_candidates = int(os.environ.get("RETRIEVE_MAX_CANDIDATES", "6000"))
+            base_qs = PageChunk.objects.only(
                 "chunk_text", "title", "section", "url", "source_type", "updated_at"
             ).order_by("-updated_at")
-            for row in qs.iterator(chunk_size=500):
+
+            lookup_terms: list[str] = []
+            seen_terms: set[str] = set()
+            for kw in keywords[:12]:
+                if len(kw) < 3:
+                    continue
+                for term in (kw, kw[:5] if len(kw) >= 7 else ""):
+                    if len(term) >= 3 and term not in seen_terms:
+                        seen_terms.add(term)
+                        lookup_terms.append(term)
+                if len(lookup_terms) >= 18:
+                    break
+
+            candidate_qs = base_qs
+            if lookup_terms:
+                q_filter = Q()
+                for term in lookup_terms:
+                    q_filter |= (
+                        Q(chunk_text__icontains=term)
+                        | Q(title__icontains=term)
+                        | Q(section__icontains=term)
+                        | Q(url__icontains=term)
+                    )
+                narrowed = base_qs.filter(q_filter)
+                candidate_qs = narrowed if narrowed.exists() else base_qs[:max_candidates]
+            else:
+                candidate_qs = base_qs[:max_candidates]
+
+            candidate_qs = candidate_qs[:max_candidates]
+
+            scored_all: list[tuple[int, object, object]] = []
+            for row in candidate_qs.iterator(chunk_size=500):
                 s = _score_row(row)
                 updated = row.updated_at or ""
                 scored_all.append((s, updated, row))
@@ -409,7 +444,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
             if top_score <= 0:
                 return ""
 
-            logger.info("retrieve_context(db): question=%r", question)
+            logger.info("retrieve_context(db): question=%r candidates=%s", question, len(scored_all))
             for rank, (s, _u, row) in enumerate(scored_all[:k], start=1):
                 logger.info("retrieve_context(db): #%s score=%s title=%r", rank, s, row.title)
 
@@ -492,6 +527,14 @@ def ask_gemma(prompt: str) -> str:
             },
             timeout=300,
         )
+        if response.status_code == 404:
+            body = (response.text or "").strip()[:400]
+            return (
+                "Gemma error: Ollama returned 404 (usually the model is not downloaded yet). "
+                f"Run once: docker compose exec ollama ollama pull {model} "
+                f"(or locally: ollama pull {model}). "
+                f"Ollama said: {body or 'empty body'}"
+            )
         response.raise_for_status()
         data = response.json()
         return (data["response"] or "").strip()

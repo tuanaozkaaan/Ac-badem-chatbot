@@ -56,6 +56,16 @@ source .venv/bin/activate
 cp .env.example .env
 ```
 
+### Data persistence (very important)
+
+- PostgreSQL data is stored in a **Docker named volume** (`postgres_data`) so it will **survive**:
+  - machine reboots
+  - `docker compose restart`
+  - `git pull` / code changes
+  - teammates changing code (your local volume stays local)
+- The project sets `COMPOSE_PROJECT_NAME=acbadem_chatbot` in `.env` so the volume name stays stable even if you rename the folder.
+- **Do not run** `docker compose down -v`. This will delete the database volume and permanently remove all scraped/chunked/embedded data.
+
 3. Install dependencies:
 
 ```bash
@@ -134,6 +144,12 @@ python3 manage.py shell
 ```python
 from chatbot.models import ScrapedPage, PageChunk
 ScrapedPage.objects.count(), PageChunk.objects.count()
+```
+
+### Data check (counts)
+
+```bash
+docker compose exec web python manage.py shell -c "from chatbot.models import ScrapedPage, PageChunk, ChunkEmbedding; print('pages=', ScrapedPage.objects.count()); print('chunks=', PageChunk.objects.count()); print('embeddings=', ChunkEmbedding.objects.count())"
 ```
 
 ## Run
