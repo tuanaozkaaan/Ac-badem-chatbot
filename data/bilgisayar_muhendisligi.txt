@@ -1,0 +1,11 @@
+Bilgisayar Mühendisliği (lisans) — Acıbadem Üniversitesi için özet bilgi notu
+
+Bu metin genel çerçeve sunar; güncel ders kodları, kredi dağılımı ve önkoşullar yalnızca üniversitenin resmî müfredat / duyuru sayfalarında doğrulanmalıdır.
+
+Bilgisayar Mühendisliği lisans programı, yazılım ile donanımı birlikte ele alan, karmaşık sistemleri tasarlama ve gerçek dünya problemlerini modelleyip çözme becerisi kazandıran bir mühendislik disiplinidir. Öğrenciler teoriyi laboratuvar ve proje dersleriyle birleştirir; çoğu programda zorunlu veya seçmeli staj ile bitirme projesi bulunur.
+
+Tipik ders alanları (üniversiteye göre adlar ve sıra değişebilir): programlama ve veri yapıları, algoritma analizi ve tasarımı, nesne yönelimli programlama, işletim sistemleri ve bilgisayar mimarisine giriş, veritanı yönetim sistemleri, bilgisayar ağları ve iletişim, yazılım mühendisliği ilkeleri, ayrık matematik ve olasılık/istatistik, web veya mobil uygulama geliştirme, bilgi güvenliği temelleri, yapay zekâ veya makine öğrenmesine giriş.
+
+Bölüm başkanı bilgisi (özet kaynak): Bilgisayar Mühendisliği Bölüm Başkanı Prof. Ahmet Bulut’tur.
+
+Önemli ayrım: Bilgisayar Programcılığı önlisans programı daha kısa süreli ve uygulama ağırlıklıdır; mühendislik lisans programının yerine geçmez ve müfredat olarak karıştırılmamalıdır.

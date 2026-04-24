@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -26,6 +27,26 @@ OFFICIAL_CAMPUS_ADDRESS_BLOCK = (
     "E-posta: info@acibadem.edu.tr\n"
 )
 
+_CE_OVERVIEW_FALLBACK = (
+    "[Özet kaynak — Bilgisayar Mühendisliği lisans; resmî müfredat değildir]\n"
+    "Bilgisayar Mühendisliği lisans programı yazılım ve donanımı birlikte ele alır; algoritma, veri yapıları, "
+    "işletim sistemleri ve mimari, veritabanları, ağlar, yazılım mühendisliği ve proje dersleri tipik kapsamdadır "
+    "(ders adları üniversiteye göre değişir). Bilgisayar Programcılığı önlisans programı ayrı bir düzeydedir."
+)
+
+
+def _ce_overview_context_block() -> str:
+    """Short CE overview from repo data/ (Docker volume); fallback if file missing."""
+    p = Path(__file__).resolve().parent.parent / "data" / "bilgisayar_muhendisligi.txt"
+    try:
+        if p.is_file():
+            raw = p.read_text(encoding="utf-8", errors="replace").strip()
+            if raw:
+                return f"[Özet kaynak — Bilgisayar Mühendisliği lisans; resmî müfredat değildir]\n{raw}"
+    except OSError:
+        pass
+    return _CE_OVERVIEW_FALLBACK
+
 
 def _ascii_fold_turkish(s: str) -> str:
     """Lowercase + map Turkish letters so 'acıbadem' and 'acibadem' both match 'acibadem'."""
@@ -38,6 +59,45 @@ def _ascii_fold_turkish(s: str) -> str:
         .replace("ö", "o")
         .replace("ç", "c")
         .replace("\u0307", "")
+    )
+
+
+def _green_or_sustainable_campus_question(question: str) -> bool:
+    """
+    Sustainability / green campus topics. These must NOT trigger postal-address
+    routing (word 'kampüs' alone would otherwise match address_intent).
+    """
+    raw = (question or "").lower()
+    if any(
+        x in raw
+        for x in (
+            "sürdürülebilir",
+            "surdürülebilir",
+            "yeşil kampüs",
+            "yesil kampus",
+            "çevre dostu",
+            "iklim dostu",
+            "karbon ayak",
+            "karbon nötr",
+            "leed",
+            "eko kampüs",
+            "eko kampus",
+        )
+    ):
+        return True
+    q = _ascii_fold_turkish(question or "")
+    return any(
+        x in q
+        for x in (
+            "surduurulebilir",
+            "surdurulebilir",
+            "sustainable",
+            "green campus",
+            "carbon neutral",
+            "iklim",
+            "leed",
+            "eko kampus",
+        )
     )
 
 
@@ -85,6 +145,31 @@ def _strip_urls_plain_text(answer: str) -> str:
     s = re.sub(r"[ \t]+\n", "\n", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return re.sub(r" {2,}", " ", s).strip()
+
+
+def _answer_is_stock_no_info(answer: str) -> bool:
+    al = re.sub(r"\s+", " ", (answer or "").strip().lower())
+    return al.startswith("bu konuda elimde net bir bilgi bulunamad") or al.startswith(
+        "i couldn't find clear information about this"
+    )
+
+
+def _context_likely_relevant(question: str, context: str) -> bool:
+    """
+    Heuristic: question keywords (ASCII-folded) appear in folded context — suggests
+    the model should answer from context instead of a generic refusal.
+    """
+    if not (context or "").strip():
+        return False
+    ctxf = _ascii_fold_turkish(context)
+    qf = _ascii_fold_turkish(question or "")
+    overlap_skip = _TR_STOPWORDS | frozenset(
+        "nedir kimdir nerede nasil nasıl hangi niye niçin nicin bana bizi boyle".split()
+    )
+    terms = [w for w in re.findall(r"[\w]+", qf) if len(w) >= 4 and w not in overlap_skip][:16]
+    long_hits = sum(1 for t in terms if len(t) >= 8 and t in ctxf)
+    short_hits = sum(1 for t in terms if 4 <= len(t) < 8 and t in ctxf)
+    return long_hits >= 1 or short_hits >= 2
 
 
 _TR_STOPWORDS = {
@@ -270,6 +355,52 @@ def _extract_keywords(question: str) -> list[str]:
     return out
 
 
+def _cs_engineering_lisans_intent(question: str) -> bool:
+    """
+    User asks about Computer *Engineering* (lisans), not the separate associate
+    'Bilgisayar Programcılığı' (önlisans) program.
+    """
+    q = _ascii_fold_turkish(question or "")
+    if "computer engineering" in q:
+        return True
+    if "bilgisayar" not in q:
+        return False
+    if "programcilik" in q and "muhendislik" not in q and "muhendisligi" not in q:
+        return False
+    return "muhendisligi" in q or "muhendislik" in q
+
+
+def _faculty_department_catalog_intent(question: str) -> bool:
+    """Broad questions asking which faculties/departments/programs exist at the university."""
+    ql = (question or "").lower()
+    qf = _ascii_fold_turkish(question or "")
+    needles = (
+        "hangi bölüm",
+        "hangi bolum",
+        "bölümler",
+        "bolumler",
+        "tüm bölüm",
+        "tum bolum",
+        "hangi fakülte",
+        "hangi fakulte",
+        "fakülteler",
+        "fakulteler",
+        "hangi program",
+        "hangi programlar",
+        "bölüm var",
+        "bolum var",
+        "fakülte var",
+        "fakulte var",
+    )
+    if any(n in ql for n in needles):
+        return True
+    if any(x in ql for x in ("departments", "faculties", "schools at")):
+        return True
+    if "hangi" in qf and ("bolum" in qf or "fakulte" in qf or "program" in qf):
+        return True
+    return False
+
+
 def retrieve_context(question: str, k: int = 5) -> str:
     """
     Scoring-based retrieval over PageChunk using ONLY Python logic (no embeddings).
@@ -292,6 +423,9 @@ def retrieve_context(question: str, k: int = 5) -> str:
     )
     keywords = [k for k in keywords if k not in lookup_noise]
     q_lower = (question or "").lower()
+    cs_eng_intent = _cs_engineering_lisans_intent(question)
+    green_campus_q = _green_or_sustainable_campus_question(question)
+    dept_catalog_intent = _faculty_department_catalog_intent(question)
 
     # Multi-word phrases (not produced by whitespace tokenization) improve DB icontains narrowing.
     extra_lookup_terms: list[str] = []
@@ -299,8 +433,53 @@ def retrieve_context(question: str, k: int = 5) -> str:
         extra_lookup_terms.extend(
             ["bilgisayar mühendisliği", "bilgisayar muhendisligi", "bilgisayar mühendis", "bilgisayar muhendis"]
         )
+    if cs_eng_intent:
+        extra_lookup_terms.extend(
+            [
+                "mühendislik fakültesi",
+                "muhendislik fakultesi",
+                "computer engineering",
+                "lisans programı",
+                "lisans programi",
+            ]
+        )
+    if green_campus_q:
+        extra_lookup_terms.extend(
+            [
+                "sürdürülebilir",
+                "surdurulebilir",
+                "sustainable",
+                "yeşil kampüs",
+                "yesil kampus",
+                "iklim",
+                "çevre",
+                "karbon",
+            ]
+        )
     if "bölüm başkanı" in q_lower or "bolum baskani" in q_lower:
         extra_lookup_terms.extend(["bölüm başkanı", "bolum baskani", "bölüm başkan", "bolum baskan"])
+    if dept_catalog_intent:
+        extra_lookup_terms.extend(
+            [
+                "fakülte",
+                "fakulte",
+                "mühendislik",
+                "muhendislik",
+                "tıp fakültesi",
+                "tip fakultesi",
+                "eczacılık",
+                "hemşirelik",
+                "beslenme",
+                "fizyoterapi",
+                "sağlık bilimleri",
+                "saglik bilimleri",
+                "mühendislik ve doğa",
+                "muhendislik ve doga",
+                "lisans",
+                "önlisans",
+                "onlisans",
+            ]
+        )
 
     # Intent detection (priority matters):
     # - If question mentions staj/internship => internship intent
@@ -309,7 +488,7 @@ def retrieve_context(question: str, k: int = 5) -> str:
     admission_intent = (not internship_intent) and any(
         t in q_lower for t in ("başvuru", "basvuru", "admission", "apply", "application")
     )
-    address_intent = any(
+    address_intent = (not green_campus_q) and any(
         t in q_lower
         for t in (
             "adres",
@@ -568,7 +747,10 @@ def retrieve_context(question: str, k: int = 5) -> str:
                 score += 70
             if any(t in url for t in ("bilgisayar", "yazilim", "computer", "mühendislik", "muhendislik")):
                 score += 45
+            # Do not treat associate "programcılığı" pages as the engineering department chair source.
             if "bilgisayar-programciligi" in url or "bilgisayar-programcılığı" in url:
+                score -= 180
+            if any(x in url for x in ("muhendislik", "mühendislik", "engineering")):
                 score += 85
             if ("sağlık yönetimi" in text or "saglik yonetimi" in text) and "bilgisayar" not in text and "yazılım" not in text:
                 score -= 95
@@ -583,6 +765,62 @@ def retrieve_context(question: str, k: int = 5) -> str:
             ):
                 if bad in url and "bilgisayar-programciligi" not in url and "muhendislik" not in url:
                     score -= 140
+
+        if cs_eng_intent:
+            u = url.lower()
+            if "bilgisayar-programciligi" in u or "bilgisayar-programcılığı" in u:
+                score -= 280
+            if "onlisans" in u or "onlisans" in text:
+                score -= 220
+            if ("programcılık" in text or "programcilik" in text) and "muhendislik" not in text and "mühendislik" not in text:
+                score -= 120
+            if any(x in u for x in ("muhendislik", "mühendislik", "engineering", "lisans")):
+                score += 100
+            if "bilgisayar mühendisliği" in text or "bilgisayar muhendisligi" in text:
+                score += 120
+            if "mühendislik fakültesi" in text or "muhendislik fakultesi" in text:
+                score += 90
+
+        if green_campus_q:
+            blob = f"{text} {title} {section}".lower()
+            if any(
+                x in blob
+                for x in (
+                    "sürdürülebilir",
+                    "surdurulebilir",
+                    "sustainable",
+                    "yeşil",
+                    "yesil",
+                    "iklim",
+                    "karbon",
+                    "leed",
+                    "çevre",
+                    "eko",
+                )
+            ):
+                score += 110
+            st = (section or "").lower()
+            if st == "contact_address" and not any(
+                x in blob for x in ("sürdürülebilir", "surdurulebilir", "sustainable", "iklim", "karbon", "leed")
+            ):
+                score -= 150
+
+        if dept_catalog_intent:
+            tl = (title or "").lower()
+            sl = (section or "").lower()
+            if "fakülte" in tl or "fakulte" in tl or "fakülte" in sl or "fakulte" in sl:
+                score += 70
+            if sum(1 for w in ("tıp", "eczacılık", "mühendislik", "hemşirelik", "beslenme", "fizyoterapi") if w in text) >= 2:
+                score += 45
+            if "/akademik/" in url and ("lisans" in url or "onlisans" in url or "yuksekokul" in url):
+                score += 35
+            uroot = url.rstrip("/").lower()
+            if uroot.endswith("acibadem.edu.tr") and any(
+                x in text for x in ("fakülte", "fakulte", "tıp", "mühendislik", "eczacılık", "hemşirelik")
+            ):
+                score += 115
+            if "eczacilik" in url or "eczacılık" in url:
+                score += 90
 
         return score
 
@@ -683,7 +921,59 @@ def retrieve_context(question: str, k: int = 5) -> str:
             for rank, (s, _u, row) in enumerate(scored_all[:k], start=1):
                 logger.info("retrieve_context(db): #%s score=%s title=%r", rank, s, row.title)
 
-            top_rows = [row for _, _, row in scored_all[:k]]
+            if dept_catalog_intent:
+                picked: list = []
+                url_counts: dict[str, int] = {}
+                seen_pk: set[int] = set()
+                max_per_url = 2
+
+                def _take_row(row) -> bool:
+                    pk = int(row.pk)
+                    if pk in seen_pk:
+                        return False
+                    urlv = ((row.url or "")[:220] or "?").lower()
+                    if url_counts.get(urlv, 0) >= max_per_url:
+                        return False
+                    picked.append(row)
+                    seen_pk.add(pk)
+                    url_counts[urlv] = url_counts.get(urlv, 0) + 1
+                    return True
+
+                for _s, _u, row in scored_all:
+                    if len(picked) >= k:
+                        break
+                    _take_row(row)
+                for _s, _u, row in scored_all:
+                    if len(picked) >= k:
+                        break
+                    if int(row.pk) in seen_pk:
+                        continue
+                    picked.append(row)
+                    seen_pk.add(int(row.pk))
+                overview_row = None
+                for _s, _u, row in scored_all[:120]:
+                    uu = (row.url or "").rstrip("/").lower()
+                    tx = (row.chunk_text or "").lower()
+                    if uu.endswith("acibadem.edu.tr") and any(
+                        x in tx
+                        for x in (
+                            "tıp fakültesi",
+                            "tip fakultesi",
+                            "mühendislik",
+                            "muhendislik",
+                            "eczacılık",
+                            "eczacilik",
+                            "fakültesi",
+                            "fakultesi",
+                        )
+                    ):
+                        overview_row = row
+                        break
+                if overview_row is not None and int(overview_row.pk) not in {int(r.pk) for r in picked}:
+                    picked = [overview_row] + picked[: max(0, k - 1)]
+                top_rows = picked[:k]
+            else:
+                top_rows = [row for _, _, row in scored_all[:k]]
             blocks: list[str] = []
             for c in top_rows:
                 meta = " | ".join(
@@ -825,9 +1115,43 @@ def _resolve_conversation(body: dict):
     return conv, None
 
 
-def _persist_assistant_reply(conv, text: str, *, status: int = 200, as_detail: bool = False) -> JsonResponse:
+def _append_followup_invite(text: str, *, is_tr: bool, conv_id: int, question: str) -> str:
+    """Short closing line suggesting what the user might ask next (rotates per thread/question)."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    salt = f"{conv_id}|{question[:96]}|{len(t)}"
+    h = int(hashlib.sha256(salt.encode("utf-8", errors="replace")).hexdigest(), 16)
+    if is_tr:
+        variants = [
+            "\n\n— Başka ne sormak istersin? Örneğin fakülteler, başvuru takvimi, burslar veya kampüs yaşamı hakkında sorabilirsin.",
+            "\n\n— İstersen devam edebilirsin: programlar, staj veya Erasmus, iletişim ya da ders planı gibi konularda da yardımcı olabilirim.",
+            "\n\n— Aklında başka bir konu var mı? Bölümler, akademik takvim veya yerleşke ve ulaşım hakkında da sorabilirsin.",
+            "\n\n— Bir sonraki sorun ne olsun istersin? Kayıt şartları, yurt, sosyal tesisler veya iletişim kanalları üzerine de konuşabiliriz.",
+        ]
+    else:
+        variants = [
+            "\n\n— What would you like to ask next? You could try faculties, admissions timeline, scholarships, or campus life.",
+            "\n\n— Want to go deeper? Programs, internships or exchange, contact options, or the academic calendar are good topics too.",
+            "\n\n— Anything else on your mind about Acıbadem University? Housing, transport, or student services, for example.",
+        ]
+    return t + variants[h % len(variants)]
+
+
+def _persist_assistant_reply(
+    conv,
+    text: str,
+    *,
+    status: int = 200,
+    as_detail: bool = False,
+    attach_followup: bool = False,
+    is_tr: bool = True,
+    question: str = "",
+) -> JsonResponse:
     from chatbot.models import Message
 
+    if attach_followup and status == 200 and not as_detail:
+        text = _append_followup_invite(text, is_tr=is_tr, conv_id=int(conv.pk), question=question or "")
     Message.objects.create(conversation=conv, role=Message.ROLE_ASSISTANT, content=text)
     _touch_conversation_updated_at(conv)
     payload: dict = {"conversation_id": conv.pk}
@@ -878,7 +1202,8 @@ def ask(request):
 
         # ASCII-fold so Turkish chars and .lower() quirks cannot skip the postal shortcut.
         q_fold = _ascii_fold_turkish(question)
-        address_intent = any(
+        campus_green_q = _green_or_sustainable_campus_question(question)
+        address_intent = (not campus_green_q) and any(
             t in q_fold
             for t in (
                 "adres",
@@ -894,9 +1219,22 @@ def ask(request):
         if _wants_postal_address_detail(q_fold) and (
             "acibadem" in q_fold or _thread_suggests_acibadem_topic(conv)
         ):
-            return _persist_assistant_reply(conv, _canonical_campus_address_reply(is_tr))
+            return _persist_assistant_reply(
+                conv,
+                _canonical_campus_address_reply(is_tr),
+                attach_followup=True,
+                is_tr=is_tr,
+                question=question,
+            )
 
-        context = retrieve_context(question, k=8 if address_intent else 5)
+        cs_eng_q = _cs_engineering_lisans_intent(question)
+        dept_cat = _faculty_department_catalog_intent(question)
+        k_ctx = 5
+        if address_intent or cs_eng_q or campus_green_q:
+            k_ctx = 8
+        if dept_cat:
+            k_ctx = max(k_ctx, 14)
+        context = retrieve_context(question, k=k_ctx)
         if address_intent:
             ctx_body = (context or "").strip()
             context = (
@@ -908,6 +1246,10 @@ def ask(request):
             context = re.sub(r"https?://\S+", "", context)
             context = re.sub(r" {2,}", " ", context)
             context = re.sub(r"\n{3,}", "\n\n", context).strip()
+        if cs_eng_q:
+            ce_block = _ce_overview_context_block()
+            ctx_body = (context or "").strip()
+            context = f"{ce_block}\n\n{ctx_body}".strip() if ctx_body else ce_block
         if not context:
             return _persist_assistant_reply(
                 conv,
@@ -924,6 +1266,9 @@ def ask(request):
                         "or verify on the official website."
                     )
                 ),
+                attach_followup=True,
+                is_tr=is_tr,
+                question=question,
             )
 
         # Truncate context to keep latency manageable on small local models.
@@ -945,6 +1290,32 @@ ADDRESS / LOCATION QUESTIONS:
 - Never treat an indoor office line as the full university address if a broader postal/campus line exists in the context.
 """
 
+        cs_eng_rules = ""
+        if _cs_engineering_lisans_intent(question):
+            cs_eng_rules = """
+COMPUTER ENGINEERING vs PROGRAMMING:
+- The context begins with a **general overview** of Bilgisayar Mühendisliği (lisans). Use it to explain the field, typical course areas, and labs/projects at a high level. State clearly that it is not the official course catalogue.
+- **Bilgisayar Programcılığı** (önlisans) is a different program: do not describe its lab pages or curriculum as if they were the engineering degree. If lower context is only associate programming, mention the distinction in one short sentence and base the engineering explanation on the overview block.
+- Do not invent specific course codes, credit counts, or prerequisite chains not stated in the context.
+"""
+
+        green_campus_rules = ""
+        if campus_green_q:
+            green_campus_rules = """
+SUSTAINABLE / GREEN CAMPUS (sürdürülebilir kampüs):
+- The user asks what a sustainable campus means or how the university approaches sustainability.
+- If the Bağlam contains words like "sürdürülebilir", "sustainable", "çevre", "iklim", "karbon", "LEED", "yeşil", or similar, you MUST base your answer on those lines (paraphrase clearly). Short marketing lines are enough to give a useful explanation.
+- Do NOT reply with only the stock phrase "Bu konuda elimde net bir bilgi bulunamadı" / "I couldn't find clear information about this" when any such wording appears in the Bağlam.
+"""
+
+        dept_catalog_rules = ""
+        if dept_cat:
+            dept_catalog_rules = """
+FACULTY / DEPARTMENT OVERVIEW:
+- The user wants a list or overview of faculties, schools, or departments. Use **all** distinct programs/faculties mentioned across the entire Bağlam, not only the first chunk.
+- Group logically (e.g. by faculty/school) when possible. If the Bağlam clearly does not cover every school at the university, say briefly that the list comes from the retrieved pages and may be incomplete, but still list everything you can ground in the text.
+"""
+
         prompt = f"""
 You are a helpful university assistant.
 
@@ -960,14 +1331,23 @@ RETRIEVAL RULES:
 - If needed, translate the relevant information before answering.
 
 SCOPE / PROGRAM NAME:
-- The user may say "bilgisayar mühendisliği" while the retrieved pages describe a closely related program (e.g. Bilgisayar Programcılığı önlisans). If the context contains a named program head / coordinator, answer with that person and clearly state which program/level the source refers to.
+- If the user asks about a **department head** and the context names someone for a different level (e.g. associate program coordinator), name that person and clearly state which program/level the source refers to.
 - Never invent a person or title that is not supported by the context.
+{green_campus_rules}
+{dept_catalog_rules}
+{cs_eng_rules}
 {address_rules}
+TOPIC USE (always apply):
+- Map the user's question to the **most relevant** sentences in the Bağlam. If several snippets are only partly related, still weave them into **one clear, helpful answer** instead of refusing.
+- **Partial information counts:** explain what the Bağlam actually says; you may add one short sentence on what is not in the text. Do not invent facts beyond the Bağlam.
+- Use the stock "no information" reply **only** when the Bağlam does **not** substantively mention the main things the user asked about (names, programs, concepts).
+
 ANSWERING RULES:
+- Do NOT end with generic prompts like "What else can I help with?" or "Başka sorunuz var mı?" — keep the answer self-contained; the UI adds a short follow-up suggestion separately.
 - Do NOT hallucinate.
 - If the answer exists in the context, use it clearly.
 - If the context is in another language, translate it to the user’s language.
-- If no relevant information exists, say exactly:
+- If the Bağlam truly has nothing usable for the question, say exactly:
   - Turkish: "Bu konuda elimde net bir bilgi bulunamadı."
   - English: "I couldn't find clear information about this."
 
@@ -987,10 +1367,66 @@ Kullanıcı sorusu:
  Cevap (yalnızca bağlama dayanarak):
 """
         answer = ask_gemma(prompt)
+        ctx_lc = (context or "").lower()
+        if campus_green_q and ctx_lc and any(
+            w in ctx_lc
+            for w in (
+                "sürdürülebilir",
+                "surdurulebilir",
+                "sustainable",
+                "iklim",
+                "çevre",
+                "cevre",
+                "yeşil",
+                "yesil",
+                "karbon",
+                "leed",
+                "eko",
+            )
+        ):
+            if _answer_is_stock_no_info(answer):
+                retry = (
+                    "Aşağıdaki bağlamdan YALNIZCA yazılanları kullanarak soruyu Türkçe, 4–7 cümle ile yanıtla. "
+                    "Uydurma bilgi ekleme. Bağlamda sürdürülebilirlik, çevre veya kampüsle ilgili ne varsa açıkla.\n\n"
+                    f"Bağlam:\n{context[:4000]}\n\nSoru: {question}"
+                    if is_tr
+                    else (
+                        "Answer the question in English using ONLY the context below (4–7 sentences). "
+                        "Do not invent facts. Explain any sustainability, environment, or campus-related wording.\n\n"
+                        f"Context:\n{context[:4000]}\n\nQuestion: {question}"
+                    )
+                )
+                answer = (ask_gemma(retry) or "").strip() or answer
+        if (
+            _context_likely_relevant(question, context)
+            and _answer_is_stock_no_info(answer)
+            and len((context or "").strip()) > 120
+        ):
+            retry_gen = (
+                "Kullanıcının sorusu ile aşağıdaki bağlam arasında anlamlı kelime örtüşmesi var. "
+                "Bağlamdan YALNIZCA desteklenen bilgileri kullanarak Türkçe, akıcı bir yanıt yaz (en az 3 cümle). "
+                "Uydurma. Bağlam gerçekten cevap vermiyorsa tek cümlede 'Bu konuda elimde net bir bilgi bulunamadı.' de.\n\n"
+                f"Bağlam:\n{context[:4200]}\n\nSoru: {question}"
+                if is_tr
+                else (
+                    "There is lexical overlap between the question and the context below. "
+                    "Write a helpful answer in English using ONLY supported facts from the context (at least 3 sentences). "
+                    "Do not invent. If the context truly does not support an answer, output only: "
+                    "I couldn't find clear information about this.\n\n"
+                    f"Context:\n{context[:4200]}\n\nQuestion: {question}"
+                )
+            )
+            answer = (ask_gemma(retry_gen) or "").strip() or answer
         if answer.startswith("Gemma error:"):
             return _persist_assistant_reply(conv, answer, status=502, as_detail=True)
         if not (answer or "").strip():
-            return _persist_assistant_reply(conv, no_info_msg)
+            return _persist_assistant_reply(
+                conv,
+                no_info_msg,
+                attach_followup=True,
+                is_tr=is_tr,
+                question=question,
+            )
         # Enforce answer language: if model drifts (or mixes languages), translate back
         # without adding facts. Be strict for EN questions (UI expectation).
         if is_tr:
@@ -1001,7 +1437,13 @@ Kullanıcı sorusu:
                 answer = _translate_answer(answer, "en")
         if address_intent:
             answer = _strip_urls_plain_text(answer)
-        return _persist_assistant_reply(conv, answer)
+        return _persist_assistant_reply(
+            conv,
+            answer,
+            attach_followup=True,
+            is_tr=is_tr,
+            question=question,
+        )
     except Exception:
         logger.exception("Failed to answer question in /ask")
         err_text = "Backend initialization failed. Check model/dependencies and server logs."
