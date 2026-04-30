@@ -17,6 +17,15 @@ def _get_ollama_model() -> str:
     return model or DEFAULT_OLLAMA_MODEL
 
 
+def _get_ollama_timeout_seconds() -> int:
+    raw_value = os.environ.get("OLLAMA_HTTP_TIMEOUT", "360").strip()
+    try:
+        timeout = int(raw_value)
+    except ValueError:
+        timeout = 360
+    return max(90, min(timeout, 900))
+
+
 class LocalLLM:
     """
     Thin wrapper around llama.cpp OR Ollama HTTP API for local inference.
@@ -30,17 +39,20 @@ class LocalLLM:
         if self._use_ollama:
             self._ollama_base = os.environ["OLLAMA_BASE_URL"].strip().rstrip("/")
             self._ollama_model = _get_ollama_model()
+            self._ollama_timeout_seconds = _get_ollama_timeout_seconds()
             self.llm = None
             logger.info(
-                "LocalLLM: Ollama mode — base_url=%r, model=%r",
+                "LocalLLM: Ollama mode — base_url=%r, model=%r, timeout=%ss",
                 self._ollama_base,
                 self._ollama_model,
+                self._ollama_timeout_seconds,
             )
             # Ensures docker logs show the resolved URL even if logging is not configured.
             _gen = f"{self._ollama_base}/api/generate"
             print(
                 f"DEBUG: LocalLLM: Ollama OLLAMA_BASE_URL={self._ollama_base!r}, "
-                f"OLLAMA_MODEL={self._ollama_model!r}, generate endpoint={_gen!r}"
+                f"OLLAMA_MODEL={self._ollama_model!r}, timeout={self._ollama_timeout_seconds}s, "
+                f"generate endpoint={_gen!r}"
             )
             return
 
@@ -85,7 +97,13 @@ class LocalLLM:
                 "options": {"temperature": temperature, "num_predict": max_tokens},
             }
             try:
-                with httpx.Client(timeout=300.0) as client:
+                timeout = httpx.Timeout(
+                    connect=min(30.0, self._ollama_timeout_seconds / 3),
+                    read=float(self._ollama_timeout_seconds),
+                    write=min(30.0, self._ollama_timeout_seconds / 3),
+                    pool=min(30.0, self._ollama_timeout_seconds / 3),
+                )
+                with httpx.Client(timeout=timeout) as client:
                     response = client.post(url, json=payload)
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
