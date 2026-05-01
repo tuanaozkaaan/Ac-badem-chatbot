@@ -53,6 +53,14 @@ _ENGINEERING_DEPARTMENTS_FALLBACK = (
     "- Moleküler Biyoloji ve Genetik (MBG)\n\n"
     "Not: Bu bilgi yerel veri dosyalarından derlenmiştir."
 )
+_SAFE_FALLBACK_TR = (
+    "Bu bilgi yerel veri kaynaklarında net olarak bulunamadı. "
+    "En doğru ve güncel bilgi için Acıbadem Üniversitesi’nin resmi web sitesini kontrol etmeniz önerilir."
+)
+_SAFE_FALLBACK_EN = (
+    "This information was not clearly found in the local data sources. "
+    "For the most accurate and up-to-date information, please check Acıbadem University’s official website."
+)
 
 
 def _ce_overview_context_block() -> str:
@@ -127,6 +135,143 @@ def _ascii_fold_turkish(s: str) -> str:
         .replace("ç", "c")
         .replace("\u0307", "")
     )
+
+
+def _detect_broad_intent(question: str) -> str:
+    q = _ascii_fold_turkish(question or "")
+    if any(x in q for x in ("kontenjan", "quota", "kapasite", "capacity")):
+        return "quota_capacity"
+    if any(x in q for x in ("ogrenci sayi", "student count", "kac ogrenci", "how many students")):
+        return "student_count"
+    if any(
+        x in q
+        for x in (
+            "fakulte",
+            "bolum",
+            "departments",
+            "faculties",
+            "muhendislik ve doga bilimleri",
+        )
+    ):
+        return "faculties_departments"
+    if any(x in q for x in ("basvuru", "admission", "apply", "kabul", "deadline", "belge", "requirement")):
+        return "admission_application"
+    if any(x in q for x in ("ucret", "tuition", "burs", "scholarship", "payment plan", "odeme")):
+        return "tuition_scholarship"
+    if any(x in q for x in ("dekan", "bolum baskan", "academic staff", "professor", "advisor", "akademik kadro")):
+        return "academic_staff"
+    if any(x in q for x in ("staj", "internship", "kariyer", "career", "mezun", "graduate")):
+        return "career_internship"
+    if any(x in q for x in ("uluslararasi", "international student", "foreign student", "study abroad", "erasmus")):
+        return "international_students"
+    if any(x in q for x in ("yurt", "kulup", "spor", "kampus hayati", "campus life", "cafeteria", "social")):
+        return "campus_life"
+    if any(x in q for x in ("iletisim", "contact", "duyuru", "announcement", "kutuphane", "library", "support")):
+        return "contact_support"
+    if any(x in q for x in ("acibadem universitesi", "university known for", "hakkinda bilgi", "detailed information")):
+        return "general_university_info"
+    return "unknown"
+
+
+def _extract_rag_top_docs(context: str, limit: int = 3) -> list[str]:
+    docs: list[str] = []
+    for line in (context or "").splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]") and len(s) > 2:
+            docs.append(s[1:-1][:160])
+            if len(docs) >= limit:
+                break
+    return docs
+
+
+def _rag_confidence(question: str, context: str, intent: str) -> tuple[str, float]:
+    if not (context or "").strip():
+        return "RAG_WEAK", 0.0
+    q = _ascii_fold_turkish(question or "")
+    c = _ascii_fold_turkish(context or "")
+    overlap = _context_likely_relevant(question, context)
+
+    strict_terms = {
+        "quota_capacity": ("kontenjan", "quota", "kapasite", "capacity"),
+        "student_count": ("ogrenci sayi", "student count", "kac ogrenci", "how many students"),
+        "academic_staff": ("dekan", "baskan", "chair", "dean", "prof", "dr."),
+    }
+    if intent in strict_terms:
+        has_q = any(t in q for t in strict_terms[intent])
+        has_c = any(t in c for t in strict_terms[intent])
+        if has_q and not has_c:
+            return "RAG_WEAK", 0.18
+
+    if intent != "unknown":
+        intent_tokens = {
+            "general_university_info": ("universite", "kampus", "egitim", "program"),
+            "faculties_departments": ("fakulte", "bolum", "program"),
+            "admission_application": ("basvuru", "kabul", "requirement", "deadline"),
+            "tuition_scholarship": ("ucret", "tuition", "burs", "scholarship"),
+            "campus_life": ("kampus", "yurt", "kulup", "social"),
+            "career_internship": ("staj", "internship", "kariyer", "career"),
+            "international_students": ("uluslararasi", "international", "foreign", "erasmus"),
+            "contact_support": ("iletisim", "contact", "kutuphane", "library", "duyuru"),
+        }
+        toks = intent_tokens.get(intent, ())
+        token_hits = sum(1 for t in toks if t in c)
+        score = 0.35 + (0.2 if overlap else 0.0) + min(0.45, token_hits * 0.12)
+        return ("RAG_CONFIDENT", score) if score >= 0.62 else ("RAG_WEAK", score)
+
+    score = 0.65 if overlap else 0.35
+    return ("RAG_CONFIDENT", score) if overlap else ("RAG_WEAK", score)
+
+
+def _academic_staff_exact_context_exists(question: str, context: str) -> bool:
+    q = _ascii_fold_turkish(question or "")
+    c = _ascii_fold_turkish(context or "")
+    role_pairs = (
+        ("dekan", "dekan"),
+        ("bolum baskani", "bolum baskan"),
+        ("department chair", "chair"),
+        ("department head", "head"),
+    )
+    for q_role, c_role in role_pairs:
+        if q_role in q and c_role not in c:
+            return False
+    return True
+
+
+def _academic_staff_answer_consistent(question: str, answer: str) -> bool:
+    q = _ascii_fold_turkish(question or "")
+    a = _ascii_fold_turkish(answer or "")
+    if "dekan" in q and "dekan" not in a:
+        return False
+    if ("bolum baskani" in q or "department chair" in q or "department head" in q) and (
+        "baskan" not in a and "chair" not in a and "head" not in a
+    ):
+        return False
+    return True
+
+
+def _extract_academic_staff_fact(question: str, context: str) -> str | None:
+    q = _ascii_fold_turkish(question or "")
+    role = None
+    if "dekan" in q:
+        role = "dekan"
+    elif "bolum baskani" in q or "department chair" in q or "department head" in q:
+        role = "baskan"
+    if role is None:
+        return None
+
+    pieces = re.split(r"[\n\.]", context or "")
+    for piece in pieces:
+        raw = piece.strip()
+        if not raw:
+            continue
+        folded = _ascii_fold_turkish(raw)
+        if role == "dekan" and "dekan" not in folded:
+            continue
+        if role == "baskan" and not any(x in folded for x in ("baskan", "chair", "head")):
+            continue
+        if re.search(r"\b(prof|do[cç]|dr)\.?\b", folded, flags=re.IGNORECASE):
+            return raw
+    return None
 
 
 def _green_or_sustainable_campus_question(question: str) -> bool:
@@ -1796,23 +1941,17 @@ def ask(request):
         conv.title = _conversation_title_from_question(question)
         conv.save(update_fields=["title"])
 
+    t_total = time.perf_counter()
     try:
         lang = _detect_language(question)
         is_tr = lang == "tr"
+        detected_intent = _detect_broad_intent(question)
+        logger.info("DETECTED_INTENT=%s", detected_intent)
         no_info_msg = (
             "Bu konuda elimde net bir bilgi bulunamadı."
             if is_tr
             else "I couldn't find clear information about this."
         )
-
-        if _engineering_faculty_departments_intent(question):
-            return _persist_assistant_reply(
-                conv,
-                _engineering_faculty_departments_reply(),
-                attach_followup=False,
-                is_tr=True,
-                question=question,
-            )
 
         # ASCII-fold so Turkish chars and .lower() quirks cannot skip the postal shortcut.
         q_fold = _ascii_fold_turkish(question)
@@ -1861,6 +2000,36 @@ def ask(request):
         t_retrieve = time.perf_counter()
         context = retrieve_context(question, k=k_ctx)
         logger.info("/ask retrieve_context done in %.2fs", time.perf_counter() - t_retrieve)
+        rag_top_docs = _extract_rag_top_docs(context, limit=3)
+        logger.info("RAG_TOP_DOCS %s", " | ".join(rag_top_docs) if rag_top_docs else "(none)")
+        rag_conf_label, rag_conf_score = _rag_confidence(question, context, detected_intent)
+        logger.info("RAG_CONFIDENCE=%s score=%.3f", rag_conf_label, rag_conf_score)
+        if detected_intent == "academic_staff" and not _academic_staff_exact_context_exists(question, context):
+            rag_conf_label, rag_conf_score = "RAG_WEAK", min(rag_conf_score, 0.2)
+            logger.info("RAG_CONFIDENCE=%s score=%.3f reason=academic_role_not_in_context", rag_conf_label, rag_conf_score)
+        if rag_conf_label != "RAG_CONFIDENT":
+            logger.info("ANSWER_SOURCE=FALLBACK")
+            logger.info("TOTAL_TIME=%.1fms", (time.perf_counter() - t_total) * 1000)
+            return _persist_assistant_reply(
+                conv,
+                _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                attach_followup=False,
+                is_tr=is_tr,
+                question=question,
+            )
+        if detected_intent == "academic_staff":
+            strict_fact = _extract_academic_staff_fact(question, context)
+            if not strict_fact:
+                logger.info("RAG_CONFIDENCE=RAG_WEAK score=0.200 reason=missing_exact_staff_fact")
+                logger.info("ANSWER_SOURCE=FALLBACK")
+                logger.info("TOTAL_TIME=%.1fms", (time.perf_counter() - t_total) * 1000)
+                return _persist_assistant_reply(
+                    conv,
+                    _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                    attach_followup=False,
+                    is_tr=is_tr,
+                    question=question,
+                )
         if general_intro:
             ctx0 = (context or "").strip()
             context = (
@@ -1920,6 +2089,8 @@ def ask(request):
             except Exception:
                 logger.exception("course_catalog_embedding_augment_failed")
         if not context:
+            logger.info("ANSWER_SOURCE=FALLBACK")
+            logger.info("TOTAL_TIME=%.1fms", (time.perf_counter() - t_total) * 1000)
             return _persist_assistant_reply(
                 conv,
                 (
@@ -2020,6 +2191,9 @@ GENERAL UNIVERSITY INTRO:
 
         prompt = f"""
 You are a helpful university assistant.
+You MUST answer only using the provided context.
+If the answer is not found in the context, explicitly say the information is not available in local sources.
+Do not hallucinate or infer facts that are not explicitly present.
 
 OUTPUT (critical):
 - **Always** write a real answer when the Bağlam contains any information related to the question — do not return an empty reply.
@@ -2053,6 +2227,7 @@ TOPIC USE (always apply):
 ANSWERING RULES:
 - Do NOT end with generic prompts like "What else can I help with?" or "Başka sorunuz var mı?" — keep the answer self-contained; the UI adds a short follow-up suggestion separately.
 - Do NOT hallucinate.
+- For quota/capacity, student count, dean/head/chair questions: do not answer unless exact information appears in context.
 - If the answer exists in the context, use it clearly.
 - If the context is in another language, translate it to the user’s language.
 - If the Bağlam truly has nothing usable for the question, say exactly:
@@ -2144,10 +2319,12 @@ Kullanıcı sorusu:
         if answer.startswith("Gemma error:"):
             return _persist_assistant_reply(conv, answer, status=502, as_detail=True)
         if not (answer or "").strip():
+            logger.info("ANSWER_SOURCE=FALLBACK")
+            logger.info("TOTAL_TIME=%.1fms", (time.perf_counter() - t_total) * 1000)
             return _persist_assistant_reply(
                 conv,
-                no_info_msg,
-                attach_followup=True,
+                _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                attach_followup=False,
                 is_tr=is_tr,
                 question=question,
             )
@@ -2165,6 +2342,18 @@ Kullanıcı sorusu:
                 logger.info("/ask translate->en done in %.2fs", time.perf_counter() - t_tr)
         if address_intent:
             answer = _strip_urls_plain_text(answer)
+        if detected_intent == "academic_staff" and not _academic_staff_answer_consistent(question, answer):
+            logger.info("ANSWER_SOURCE=FALLBACK")
+            logger.info("TOTAL_TIME=%.1fms", (time.perf_counter() - t_total) * 1000)
+            return _persist_assistant_reply(
+                conv,
+                _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                attach_followup=False,
+                is_tr=is_tr,
+                question=question,
+            )
+        logger.info("ANSWER_SOURCE=RAG_LLM")
+        logger.info("TOTAL_TIME=%.1fms", (time.perf_counter() - t_total) * 1000)
         return _persist_assistant_reply(
             conv,
             answer,
