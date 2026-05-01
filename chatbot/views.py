@@ -6,6 +6,8 @@ import os
 import time
 import re
 import unicodedata
+import difflib
+from urllib.parse import urlparse
 from functools import lru_cache
 from pathlib import Path
 
@@ -52,6 +54,14 @@ _ENGINEERING_DEPARTMENTS_FALLBACK = (
     "- Biyomedikal Mühendisliği\n"
     "- Moleküler Biyoloji ve Genetik (MBG)\n\n"
     "Not: Bu bilgi yerel veri dosyalarından derlenmiştir."
+)
+_SAFE_FALLBACK_TR = (
+    "Bu bilgi yerel veri kaynaklarında net olarak bulunamadı. "
+    "En doğru ve güncel bilgi için Acıbadem Üniversitesi’nin resmi web sitesini kontrol etmeniz önerilir."
+)
+_SAFE_FALLBACK_EN = (
+    "This information was not clearly found in the local data sources. "
+    "For the most accurate and up-to-date information, please check Acıbadem University’s official website."
 )
 
 
@@ -237,6 +247,287 @@ def _context_likely_relevant(question: str, context: str) -> bool:
     long_hits = sum(1 for t in terms if len(t) >= 8 and t in ctxf)
     short_hits = sum(1 for t in terms if 4 <= len(t) < 8 and t in ctxf)
     return long_hits >= 1 or short_hits >= 2
+
+
+def _split_context_blocks(context: str) -> list[str]:
+    parts = [p.strip() for p in re.split(r"\n\s*---\s*\n", context or "") if p.strip()]
+    return parts if parts else ([context.strip()] if (context or "").strip() else [])
+
+
+def _detect_specific_faculty_focus(question: str) -> str | None:
+    q = _ascii_fold_turkish(question or "")
+    if "saglik bilimleri fakultesi" in q or "sağlık bilimleri fakültesi" in (question or "").lower():
+        return "saglik_bilimleri"
+    if "muhendislik ve doga bilimleri" in q or "mühendislik ve doğa bilimleri" in (question or "").lower():
+        return "muhendislik_doga"
+    return None
+
+
+def _extract_faculty_phrase(question: str) -> str | None:
+    q = _ascii_fold_turkish(question or "")
+    known = (
+        "saglik bilimleri fakultesi",
+        "muhendislik ve doga bilimleri fakultesi",
+        "tip fakultesi",
+        "eczacilik fakultesi",
+        "insan ve toplum bilimleri fakultesi",
+    )
+    for k in known:
+        if k in q:
+            return k
+    return None
+
+
+def _block_matches_faculty(block: str, focus: str | None) -> bool:
+    if not focus:
+        return True
+    b = _ascii_fold_turkish(block or "")
+    if focus == "saglik_bilimleri":
+        return "saglik bilimleri fakultesi" in b or "saglik bilimleri" in b
+    if focus == "muhendislik_doga":
+        return "muhendislik ve doga bilimleri" in b
+    return True
+
+
+def _extract_block_source_label(block: str) -> str:
+    first = (block.splitlines() or [""])[0].strip()
+    if first.startswith("[") and first.endswith("]"):
+        meta = first[1:-1]
+        parts = [p.strip() for p in meta.split("|") if p.strip()]
+        for p in parts:
+            if p.startswith("http://") or p.startswith("https://"):
+                up = urlparse(p)
+                tail = up.path.strip("/").split("/")[-1] or up.netloc
+                return tail[:80]
+        if parts:
+            return parts[0][:80]
+    return "local_text"
+
+
+def _is_extractive_question(question: str) -> bool:
+    q = _ascii_fold_turkish(question or "")
+    cues = (
+        "hangi bolumleri icerir",
+        "hangi bolumler var",
+        "hangi fakultede yer alir",
+        "kimdir",
+        "nerede",
+        "iletisim bilgileri",
+        "adres nedir",
+    )
+    return any(c in q for c in cues)
+
+
+def _extractive_department_list(question: str, context: str) -> tuple[str, str] | None:
+    q = _ascii_fold_turkish(question or "")
+    if not any(x in q for x in ("hangi bolumleri icerir", "hangi bolumler var")):
+        return None
+
+    faculty_phrase = _extract_faculty_phrase(question)
+    blocks = _split_context_blocks(context)
+    if faculty_phrase:
+        blocks = [b for b in blocks if faculty_phrase in _ascii_fold_turkish(b)]
+    if not blocks:
+        return None
+
+    dept_candidates: list[str] = []
+    other_faculty_markers = (
+        "muhendislik ve doga bilimleri fakultesi",
+        "saglik bilimleri fakultesi",
+        "tip fakultesi",
+        "eczacilik fakultesi",
+        "insan ve toplum bilimleri fakultesi",
+    )
+    for block in blocks:
+        for raw_line in block.splitlines():
+            line = raw_line.strip(" -\t")
+            lf = _ascii_fold_turkish(line)
+            if not line:
+                continue
+            if line.startswith("Source URL:") or line.startswith("Page Title:"):
+                continue
+            if faculty_phrase:
+                for marker in other_faculty_markers:
+                    if marker != faculty_phrase and marker in lf:
+                        line = ""
+                        break
+                if not line:
+                    continue
+            if any(k in lf for k in ("muhendisligi", "bolumu", "programi", "programı")):
+                if len(line) <= 120:
+                    dept_candidates.append(line)
+
+    # preserve order, dedupe
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for d in dept_candidates:
+        key = _ascii_fold_turkish(d)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(d)
+
+    if not uniq:
+        return None
+
+    if faculty_phrase:
+        pretty_faculty = {
+            "saglik bilimleri fakultesi": "Sağlık Bilimleri Fakültesi",
+            "muhendislik ve doga bilimleri fakultesi": "Mühendislik ve Doğa Bilimleri Fakültesi",
+            "tip fakultesi": "Tıp Fakültesi",
+            "eczacilik fakultesi": "Eczacılık Fakültesi",
+            "insan ve toplum bilimleri fakultesi": "İnsan ve Toplum Bilimleri Fakültesi",
+        }.get(faculty_phrase, "İlgili Fakülte")
+        header = f"{pretty_faculty} şu bölümleri içerir:"
+    else:
+        header = "İlgili fakülte şu bölümleri içerir:"
+    body = "\n".join(f"- {d}" for d in uniq[:12])
+    return f"{header}\n{body}", "department_list"
+
+
+def _extractive_person_or_title(question: str, context: str) -> tuple[str, str] | None:
+    q = question or ""
+    q_fold = _ascii_fold_turkish(q)
+    if "kimdir" not in q_fold:
+        return None
+    # simple name capture: words starting with uppercase letters
+    m = re.findall(r"\b[A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+){1,3}\b", q)
+    if not m:
+        return None
+    name = m[-1].strip()
+    nf = _ascii_fold_turkish(name)
+    title_keys = ("dekan", "bolum baskani", "bölüm başkanı", "prof", "doc", "dr", "chair", "head")
+    for sentence in re.split(r"[\n\.]+", context or ""):
+        s = sentence.strip()
+        sf = _ascii_fold_turkish(s)
+        if nf in sf and any(k in sf for k in title_keys):
+            return s + ".", "person_title"
+    return None
+
+
+def _extractive_contact_or_address(question: str, context: str) -> tuple[str, str] | None:
+    qf = _ascii_fold_turkish(question or "")
+    asks_address = "adres" in qf or "nerede" in qf
+    asks_contact = "iletisim" in qf or "telefon" in qf or "email" in qf or "e-posta" in qf
+    if not asks_address and not asks_contact:
+        return None
+
+    lines = [ln.strip() for ln in (context or "").splitlines() if ln.strip()]
+    picked: list[str] = []
+    for ln in lines:
+        lf = _ascii_fold_turkish(ln)
+        if ln.startswith("Source URL:") or ln.startswith("Page Title:"):
+            continue
+        if asks_address and any(k in lf for k in ("kampus", "cad", "no:", "atasehir", "istanbul", "adres", "kayisdagi")):
+            picked.append(ln)
+        if asks_contact and any(k in lf for k in ("telefon", "e-posta", "email", "info@acibadem.edu.tr")):
+            picked.append(ln)
+    uniq = []
+    seen = set()
+    for p in picked:
+        k = _ascii_fold_turkish(p)
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(p)
+    # Keep only official-like contact lines to avoid random person/bank rows.
+    official = [
+        u for u in uniq if any(k in _ascii_fold_turkish(u) for k in ("acibadem.edu.tr", "info@acibadem.edu.tr", "telefon", "kampus", "kayisdagi", "atasehir"))
+    ]
+    uniq = official or uniq
+    if asks_contact and not any("acibadem.edu.tr" in _ascii_fold_turkish(u) or "info@acibadem.edu.tr" in _ascii_fold_turkish(u) for u in uniq):
+        return None
+    if not uniq:
+        return None
+    return "\n".join(uniq[:8]), "contact_or_address"
+
+
+def _try_extractive_answer(question: str, context: str) -> tuple[str, str] | None:
+    for fn in (_extractive_department_list, _extractive_person_or_title, _extractive_contact_or_address):
+        out = fn(question, context)
+        if out:
+            return out
+    return None
+
+
+def _select_context_for_llm(question: str, context: str, *, max_chunks: int = 5, max_chars: int = 5000) -> tuple[str, list[str], int]:
+    blocks = _split_context_blocks(context)
+    retrieved_count = len(blocks)
+    if not blocks:
+        return "", [], 0
+
+    keywords = _extract_keywords(question)[:14]
+    q_fold = _ascii_fold_turkish(question or "")
+    faculty_focus = _detect_specific_faculty_focus(question)
+    faculty_phrase = _extract_faculty_phrase(question)
+
+    # Remove exact/near-duplicate chunks.
+    deduped: list[str] = []
+    fingerprints: list[str] = []
+    for block in blocks:
+        fp = re.sub(r"\s+", " ", _ascii_fold_turkish(block)).strip()
+        if not fp:
+            continue
+        duplicate = False
+        for seen in fingerprints:
+            if fp == seen:
+                duplicate = True
+                break
+            if difflib.SequenceMatcher(a=fp[:800], b=seen[:800]).ratio() >= 0.92:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        deduped.append(block)
+        fingerprints.append(fp)
+
+    if faculty_focus:
+        focused = [b for b in deduped if _block_matches_faculty(b, faculty_focus)]
+        if focused:
+            deduped = focused
+    if faculty_phrase:
+        strict_focused = [b for b in deduped if faculty_phrase in _ascii_fold_turkish(b)]
+        if strict_focused:
+            deduped = strict_focused
+
+    scored: list[tuple[float, str]] = []
+    for block in deduped:
+        bf = _ascii_fold_turkish(block)
+        hit_score = 0.0
+        for kw in keywords:
+            kf = _ascii_fold_turkish(kw)
+            if kf and kf in bf:
+                hit_score += 1.0
+        if faculty_focus and _block_matches_faculty(block, faculty_focus):
+            hit_score += 3.5
+        if any(x in bf for x in ("duyuru", "etkinlik")) and not any(k in q_fold for k in ("duyuru", "etkinlik")):
+            hit_score -= 0.8
+        scored.append((hit_score, block))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    selected: list[str] = []
+    selected_sources: list[str] = []
+    total_chars = 0
+    for score, block in scored:
+        if score < 0 and selected:
+            continue
+        chunk_len = len(block)
+        if selected and total_chars + chunk_len > max_chars:
+            continue
+        selected.append(block)
+        selected_sources.append(_extract_block_source_label(block))
+        total_chars += chunk_len
+        if len(selected) >= max_chunks or total_chars >= max_chars:
+            break
+
+    selected_context = "\n\n---\n\n".join(selected).strip()
+    if not selected_context:
+        return "", [], retrieved_count
+    if len(selected_context) > max_chars:
+        selected_context = selected_context[:max_chars].rsplit("\n", 1)[0].strip()
+    if not _context_likely_relevant(question, selected_context):
+        return "", selected_sources, retrieved_count
+    return selected_context, selected_sources, retrieved_count
 
 
 _TR_STOPWORDS = {
@@ -1622,15 +1913,16 @@ def _strict_rag_verify_response(question: str, body: dict) -> JsonResponse:
 
 def ask_gemma(prompt: str) -> str:
     # CPU'da ilk üretim + uzun prompt 120s'yi aşabiliyor; varsayılanı yükselt (env ile düşürülebilir).
-    ollama_http_timeout = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "300"))
+    ollama_http_timeout = int(os.environ.get("OLLAMA_HTTP_TIMEOUT", "90"))
     ollama_http_timeout = max(45, min(ollama_http_timeout, 900))
     try:
         base_url = (os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
         model = (os.environ.get("OLLAMA_MODEL") or "gemma2:2b").strip()
         # Uzun liste/müfredat için yüksek tutulabilir; .env: OLLAMA_NUM_PREDICT (üst sınır 2048).
-        raw_np = int(os.environ.get("OLLAMA_NUM_PREDICT", "384"))
+        raw_np = int(os.environ.get("OLLAMA_NUM_PREDICT", "180"))
         num_predict = max(64, min(raw_np, 2048))
         temperature = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
+        top_p = float(os.environ.get("OLLAMA_TOP_P", "0.8"))
         # Keep model loaded in VRAM/RAM between requests (e.g. "10m", "0" to unload). Empty = omit.
         keep_alive = (os.environ.get("OLLAMA_KEEP_ALIVE") or "").strip()
         payload: dict = {
@@ -1640,6 +1932,7 @@ def ask_gemma(prompt: str) -> str:
             "options": {
                 "num_predict": num_predict,
                 "temperature": temperature,
+                "top_p": top_p,
             },
         }
         if keep_alive:
@@ -1664,11 +1957,7 @@ def ask_gemma(prompt: str) -> str:
     except KeyError:
         return "Gemma error: Missing 'response' field in Ollama JSON."
     except requests.Timeout:
-        return (
-            f"Gemma error: Ollama {ollama_http_timeout}s içinde yanıt vermedi (HTTP zaman aşımı). "
-            "docker compose ps ollama; gerekirse .env: OLLAMA_HTTP_TIMEOUT=480. "
-            "İlk istekte model RAM'e yüklenir, sonrakiler genelde hızlanır."
-        )
+        return "__OLLAMA_TIMEOUT__"
     except Exception as e:
         return f"Gemma error: {str(e)}"
 
@@ -1919,26 +2208,47 @@ def ask(request):
                         )
             except Exception:
                 logger.exception("course_catalog_embedding_augment_failed")
+        selected_context, selected_sources, retrieved_chunks = _select_context_for_llm(
+            question,
+            context,
+            max_chunks=5,
+            max_chars=5000,
+        )
+        context = selected_context
+        logger.info("SELECTED_CONTEXT_FILES=%s", selected_sources)
+        logger.info(
+            "OLLAMA_PRECHECK question=%r retrieved_chunks=%s selected_sources=%s context_chars=%s",
+            question,
+            retrieved_chunks,
+            selected_sources,
+            len(context),
+        )
         if not context:
+            logger.info("ANSWER_SOURCE=FALLBACK")
+            logger.info("EXTRACTIVE_REASON=context_weak_or_unrelated")
             return _persist_assistant_reply(
                 conv,
-                (
-                    (
-                        "Bu soru için veritabanımda eşleşen metin bulamadım; doğrulanmamış bilgi uydurmam. "
-                        "Sorunuzu Acıbadem Üniversitesi ile ilgili anahtar kelimelerle (bölüm, program, kişi adı, konu) "
-                        "yeniden sorabilir veya resmî web sitesinden doğrulayabilirsiniz."
-                    )
-                    if is_tr
-                    else (
-                        "I could not find matching text in my database for this question, so I cannot invent facts. "
-                        "Try rephrasing with Acıbadem University–related keywords (department, program, person, topic) "
-                        "or verify on the official website."
-                    )
-                ),
-                attach_followup=True,
+                _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                attach_followup=False,
                 is_tr=is_tr,
                 question=question,
             )
+        if _is_extractive_question(question):
+            logger.info("EXTRACTIVE_ATTEMPTED")
+            extractive = _try_extractive_answer(question, context)
+            if extractive:
+                answer_text, reason = extractive
+                logger.info("ANSWER_SOURCE=EXTRACTIVE")
+                logger.info("EXTRACTIVE_FOUND")
+                logger.info("EXTRACTIVE_REASON=%s", reason)
+                return _persist_assistant_reply(
+                    conv,
+                    answer_text,
+                    attach_followup=False,
+                    is_tr=is_tr,
+                    question=question,
+                )
+            logger.info("EXTRACTIVE_NOT_FOUND_CONTINUE_TO_LLM")
 
         max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "5200"))
         embed_augment_on = (
@@ -2056,8 +2366,8 @@ ANSWERING RULES:
 - If the answer exists in the context, use it clearly.
 - If the context is in another language, translate it to the user’s language.
 - If the Bağlam truly has nothing usable for the question, say exactly:
-  - Turkish: "Bu konuda elimde net bir bilgi bulunamadı."
-  - English: "I couldn't find clear information about this."
+  - Turkish: "Bu bilgi yerel veri kaynaklarında net olarak bulunamadı. En doğru ve güncel bilgi için Acıbadem Üniversitesi’nin resmi web sitesini kontrol etmeniz önerilir."
+  - English: "This information was not clearly found in the local data sources. For the most accurate and up-to-date information, please check Acıbadem University’s official website."
 
 PRIORITY:
 1. Use context
@@ -2074,9 +2384,27 @@ Kullanıcı sorusu:
  
  Cevap (yalnızca bağlama dayanarak):
 """
+        logger.info(
+            "OLLAMA_INPUT question=%r retrieved_chunks=%s selected_sources=%s context_chars=%s prompt_chars=%s",
+            question,
+            retrieved_chunks,
+            selected_sources,
+            len(context),
+            len(prompt),
+        )
         t_llm = time.perf_counter()
         answer = ask_gemma(prompt)
         logger.info("/ask ask_gemma (primary) done in %.2fs", time.perf_counter() - t_llm)
+        if answer == "__OLLAMA_TIMEOUT__":
+            logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(prompt))
+            logger.info("ANSWER_SOURCE=FALLBACK")
+            return _persist_assistant_reply(
+                conv,
+                _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                attach_followup=False,
+                is_tr=is_tr,
+                question=question,
+            )
         if not (answer or "").strip() and len((context or "").strip()) > 80:
             refill = (
                 "Aşağıdaki Bağlamı kullanarak soruyu Türkçe yanıtla. Boş bırakma; en az 2 anlamlı cümle yaz.\n\n"
@@ -2091,6 +2419,16 @@ Kullanıcı sorusu:
             t_ref = time.perf_counter()
             answer = (ask_gemma(refill) or "").strip()
             logger.info("/ask ask_gemma empty-refill done in %.2fs", time.perf_counter() - t_ref)
+            if answer == "__OLLAMA_TIMEOUT__":
+                logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(refill))
+                logger.info("ANSWER_SOURCE=FALLBACK")
+                return _persist_assistant_reply(
+                    conv,
+                    _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                    attach_followup=False,
+                    is_tr=is_tr,
+                    question=question,
+                )
         ctx_lc = (context or "").lower()
         if campus_green_q and ctx_lc and any(
             w in ctx_lc
@@ -2120,7 +2458,18 @@ Kullanıcı sorusu:
                         f"Context:\n{context[:4000]}\n\nQuestion: {question}"
                     )
                 )
-                answer = (ask_gemma(retry) or "").strip() or answer
+                retry_answer = (ask_gemma(retry) or "").strip()
+                if retry_answer == "__OLLAMA_TIMEOUT__":
+                    logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(retry))
+                    logger.info("ANSWER_SOURCE=FALLBACK")
+                    return _persist_assistant_reply(
+                        conv,
+                        _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                        attach_followup=False,
+                        is_tr=is_tr,
+                        question=question,
+                    )
+                answer = retry_answer or answer
         if (
             _context_likely_relevant(question, context)
             and _answer_is_stock_no_info(answer)
@@ -2140,7 +2489,18 @@ Kullanıcı sorusu:
                     f"Context:\n{context[:4200]}\n\nQuestion: {question}"
                 )
             )
-            answer = (ask_gemma(retry_gen) or "").strip() or answer
+            retry_gen_answer = (ask_gemma(retry_gen) or "").strip()
+            if retry_gen_answer == "__OLLAMA_TIMEOUT__":
+                logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(retry_gen))
+                logger.info("ANSWER_SOURCE=FALLBACK")
+                return _persist_assistant_reply(
+                    conv,
+                    _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                    attach_followup=False,
+                    is_tr=is_tr,
+                    question=question,
+                )
+            answer = retry_gen_answer or answer
         if answer.startswith("Gemma error:"):
             return _persist_assistant_reply(conv, answer, status=502, as_detail=True)
         if not (answer or "").strip():
@@ -2165,6 +2525,7 @@ Kullanıcı sorusu:
                 logger.info("/ask translate->en done in %.2fs", time.perf_counter() - t_tr)
         if address_intent:
             answer = _strip_urls_plain_text(answer)
+        logger.info("ANSWER_SOURCE=RAG_LLM")
         return _persist_assistant_reply(
             conv,
             answer,
