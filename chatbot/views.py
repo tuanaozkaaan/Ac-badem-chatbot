@@ -246,7 +246,27 @@ def _context_likely_relevant(question: str, context: str) -> bool:
     terms = [w for w in re.findall(r"[\w]+", qf) if len(w) >= 4 and w not in overlap_skip][:16]
     long_hits = sum(1 for t in terms if len(t) >= 8 and t in ctxf)
     short_hits = sum(1 for t in terms if 4 <= len(t) < 8 and t in ctxf)
-    return long_hits >= 1 or short_hits >= 2
+    if long_hits >= 1 or short_hits >= 2:
+        return True
+
+    # Cross-language guard: TR question may map to EN context (or vice versa).
+    # Keep this broad but safe so we do not drop useful context too early.
+    if _looks_acibadem_related(question) and (
+        "acibadem" in ctxf or "acıbadem" in (context or "").lower()
+    ):
+        time_intent = any(
+            k in qf
+            for k in ("ne zaman", "when", "kuruldu", "established", "basladi", "started")
+        )
+        if time_intent and (re.search(r"\b(19|20)\d{2}\b", context or "") is not None):
+            return True
+        location_intent = any(k in qf for k in ("adres", "address", "kampus", "campus", "nerede", "where"))
+        if location_intent and any(k in ctxf for k in ("atasehir", "ataşehir", "istanbul", "kayisdagi", "kayışdağı", "cad", "no:")):
+            return True
+        # Generic fallback for Acibadem-related questions when context clearly contains Acibadem text.
+        return True
+
+    return False
 
 
 def _split_context_blocks(context: str) -> list[str]:
@@ -1919,7 +1939,7 @@ def ask_gemma(prompt: str) -> str:
         base_url = (os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
         model = (os.environ.get("OLLAMA_MODEL") or "gemma2:2b").strip()
         # Uzun liste/müfredat için yüksek tutulabilir; .env: OLLAMA_NUM_PREDICT (üst sınır 2048).
-        raw_np = int(os.environ.get("OLLAMA_NUM_PREDICT", "180"))
+        raw_np = int(os.environ.get("OLLAMA_NUM_PREDICT", "140"))
         num_predict = max(64, min(raw_np, 2048))
         temperature = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
         top_p = float(os.environ.get("OLLAMA_TOP_P", "0.8"))
@@ -2211,8 +2231,8 @@ def ask(request):
         selected_context, selected_sources, retrieved_chunks = _select_context_for_llm(
             question,
             context,
-            max_chunks=5,
-            max_chars=5000,
+            max_chunks=int(os.environ.get("DJANGO_SELECTED_MAX_CHUNKS", "4")),
+            max_chars=int(os.environ.get("DJANGO_SELECTED_MAX_CHARS", "4200")),
         )
         context = selected_context
         logger.info("SELECTED_CONTEXT_FILES=%s", selected_sources)
@@ -2250,7 +2270,7 @@ def ask(request):
                 )
             logger.info("EXTRACTIVE_NOT_FOUND_CONTINUE_TO_LLM")
 
-        max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "5200"))
+        max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "4200"))
         embed_augment_on = (
             (os.environ.get("ACU_COURSE_CATALOG_EMBED_AUGMENT") or "0").strip().lower()
             not in ("0", "false", "no")
@@ -2329,60 +2349,47 @@ GENERAL UNIVERSITY INTRO:
 """
 
         prompt = f"""
-You are a helpful university assistant.
+You are an Acibadem University RAG assistant.
 
-OUTPUT (critical):
-- **Always** write a real answer when the Bağlam contains any information related to the question — do not return an empty reply.
-- Length is flexible: short answers for simple questions; longer answers when listing many items or explaining details from the Bağlam.
-- Do not refuse only because a complete answer would be long.
+CORE RULES:
+- Use ONLY information in CONTEXT.
+- Do not use outside knowledge.
+- Do not guess or invent facts.
 
-LANGUAGE RULES:
-- Detect the language of the user's question.
-- Always answer in the SAME language as the user’s question.
-- If the question is in English → answer in English.
-- If the question is in Turkish → answer in Turkish.
+LANGUAGE:
+- The question language is {answer_language_instruction}.
+- Final answer MUST be in {answer_language_instruction}.
+- If context is in another language, translate only supported facts.
 
-RETRIEVAL RULES:
-- The context may be in Turkish or English.
-- You MUST use the context even if it is in a different language than the question.
-- If needed, translate the relevant information before answering.
+OUTPUT FORMAT:
+- Keep the answer short, clear, and factual.
+- Use bullet points for lists (departments, requirements, contacts, dates).
+- For "which departments" questions, output only the department list as bullets.
+- Do not add generic ending lines.
 
-SCOPE / PROGRAM NAME:
-- If the user asks about a **department head** and the context names someone for a different level (e.g. associate program coordinator), name that person and clearly state which program/level the source refers to.
-- Never invent a person or title that is not supported by the context.
+SOURCE LOYALTY:
+- Use only consistent facts from context.
+- If context snippets conflict, state that there is a conflict and advise checking the official website.
+- Never invent person names, titles, URLs, course codes, fees, or dates.
+
+FALLBACK RULE:
+- If context does not clearly contain the answer, output EXACTLY one of:
+  - Turkish: "Bu bilgi yerel veri kaynaklarında net olarak bulunamadı. En doğru ve güncel bilgi için Acıbadem Üniversitesi’nin resmi web sitesini kontrol etmeniz önerilir."
+  - English: "This information was not clearly found in the local data sources. For the most accurate and up-to-date information, please check Acıbadem University’s official website."
+
 {green_campus_rules}
 {dept_catalog_rules}
 {general_intro_rules}
 {cs_eng_rules}
 {address_rules}
-TOPIC USE (always apply):
-- Map the user's question to the **most relevant** sentences in the Bağlam. If several snippets are only partly related, still weave them into **one clear, helpful answer** instead of refusing.
-- **Partial information counts:** explain what the Bağlam actually says; you may add one short sentence on what is not in the text. Do not invent facts beyond the Bağlam.
-- Use the stock "no information" reply **only** when the Bağlam does **not** substantively mention the main things the user asked about (names, programs, concepts).
 
-ANSWERING RULES:
-- Do NOT end with generic prompts like "What else can I help with?" or "Başka sorunuz var mı?" — keep the answer self-contained; the UI adds a short follow-up suggestion separately.
-- Do NOT hallucinate.
-- If the answer exists in the context, use it clearly.
-- If the context is in another language, translate it to the user’s language.
-- If the Bağlam truly has nothing usable for the question, say exactly:
-  - Turkish: "Bu bilgi yerel veri kaynaklarında net olarak bulunamadı. En doğru ve güncel bilgi için Acıbadem Üniversitesi’nin resmi web sitesini kontrol etmeniz önerilir."
-  - English: "This information was not clearly found in the local data sources. For the most accurate and up-to-date information, please check Acıbadem University’s official website."
-
-PRIORITY:
-1. Use context
-2. Translate if necessary
-3. Answer in user's language
-
-Important: The user's question language is {answer_language_instruction}. Your final answer must be in {answer_language_instruction}.
-
-Bağlam:
+CONTEXT:
 {context}
 
-Kullanıcı sorusu:
+QUESTION:
 {question}
- 
- Cevap (yalnızca bağlama dayanarak):
+
+ANSWER (context-only):
 """
         logger.info(
             "OLLAMA_INPUT question=%r retrieved_chunks=%s selected_sources=%s context_chars=%s prompt_chars=%s",
@@ -2405,7 +2412,11 @@ Kullanıcı sorusu:
                 is_tr=is_tr,
                 question=question,
             )
-        if not (answer or "").strip() and len((context or "").strip()) > 80:
+        if (
+            not (answer or "").strip()
+            and len((context or "").strip()) > 180
+            and retrieved_chunks >= 2
+        ):
             refill = (
                 "Aşağıdaki Bağlamı kullanarak soruyu Türkçe yanıtla. Boş bırakma; en az 2 anlamlı cümle yaz.\n\n"
                 f"Bağlam:\n{context[:4000]}\n\nSoru:\n{question}"
@@ -2470,10 +2481,18 @@ Kullanıcı sorusu:
                         question=question,
                     )
                 answer = retry_answer or answer
+        generic_retry_on = (os.environ.get("DJANGO_ENABLE_GENERIC_RETRY") or "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         if (
+            generic_retry_on
+            and (
             _context_likely_relevant(question, context)
             and _answer_is_stock_no_info(answer)
             and len((context or "").strip()) > 120
+            )
         ):
             retry_gen = (
                 "Kullanıcının sorusu ile aşağıdaki bağlam arasında anlamlı kelime örtüşmesi var. "
