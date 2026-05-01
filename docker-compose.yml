@@ -33,7 +33,7 @@ services:
       ollama:
         condition: service_started
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       # Host templates → container (edit index.html locally, refresh browser; no image rebuild)
       - ./templates:/app/templates:ro
       # Host project-level static files (e.g. avatar image)
@@ -44,6 +44,8 @@ services:
       - ./chatbot:/app/chatbot
       # Host RAG logic → container (prompt/retrieval updates without image rebuild)
       - ./rag:/app/rag
+      # Host scripts → container (run scraper without image rebuild)
+      - ./scripts:/app/scripts
 
   db:
     image: postgres:16-alpine

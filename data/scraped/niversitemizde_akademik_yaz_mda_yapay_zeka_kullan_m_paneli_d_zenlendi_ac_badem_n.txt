@@ -1,0 +1,14 @@
+Source URL: https://www.acibadem.edu.tr/haberler/universitemizde-akademik-yazimda-yapay-zeka-kullanimi-paneli-duzenlendi
+
+Page Title: Üniversitemizde "Akademik Yazımda Yapay Zeka Kullanımı" Paneli Düzenlendi | Acıbadem Üniversitesi
+
+Content:
+Haber tarihi: 16/04/2026
+Son güncelleme tarihi: 20.04.2026
+Üniversitemiz, 62. Kütüphane Haftası kapsamında 30 Mart 2026 tarihinde “Akademik Yazımda AI: Kim Yazdı? Etik ve Yayıncı Ne Diyor?” başlıklı bir panele ev sahipliği yaptı. Farklı disiplinlerden akademisyen ve öğrencilerin yoğun katılım gösterdiği etkinlikte, yapay zekânın akademik üretimdeki rolü ve beraberinde getirdiği etik tartışmalar ele alındı.
+Panelde, Dr. Öğr. Üyesi Ceren İlikan Rasimoğlu, Prof. Dr. Yeşim Işıl Ülman ve Kütüphane ve Elektronik Kaynaklar Müdürü Ayça Aydemir Mazlumoğlu konuşmacı olarak yer aldı. Katılımcılar, yapay zekâ sistemlerinin araştırma süreçlerine sağladığı katkılar ile bu teknolojilerin kullanımında dikkat edilmesi gereken etik ilkeler üzerine kapsamlı değerlendirmeler dinleme fırsatı buldu.
+Toplantı sonuç raporuna göre, yapay zekâ (YZ) sistemleri veri analizinden içerik üretimine kadar araştırma süreçlerinde devrim niteliğinde fırsatlar sunarken, aynı zamanda önemli etik sorunları da gündeme getiriyor. YZ’nin araştırmalarda hız ve verimlilik sağlaması, tekrarlanabilirliği artırması ve büyük veri kümelerinin işlenmesini kolaylaştırması önemli avantajlar arasında yer alıyor. Ancak bu sistemlerin eğitildikleri verilerden kaynaklanan önyargılar taşıyabilmesi, yanıltıcı sonuçlara yol açma riskini beraberinde getiriyor.
+Panelde ayrıca, otomatik makale üretimi, veri uydurma ve içerik manipülasyonu gibi yapay zekânın kötüye kullanımına dikkat çekildi. Bu tür uygulamaların bilimsel dürüstlüğü zedeleyebileceği, intihal, yazarlık ve atıf konularında belirsizlikler yaratabileceği ve veri gizliliğini tehdit edebileceği vurgulandı.
+Bu sorunlarla başa çıkmak için araştırmacılara yol gösterecek rehber belgelerin önemi de ele alındı. Yapay zekâ etiğine yönelik eğitimlerin artırılması, üniversitelerde araştırma ve yayın politikalarının geliştirilmesi ve kurumsal düzeyde " Research Integrity Office" gibi yapıların oluşturulmasının gerekliliği ifade edildi.
+Panelin sonuç bölümünde, sorumlu yapay zekâ kullanımında temel değerler öne çıktı. Buna göre araştırma süreçlerinde güvenilirlik, dürüstlük, saygı ve hesap verebilirlik ilkelerinin korunmasının, bilimsel kalitenin sürdürülebilirliği açısından kritik olduğu belirtildi.
+Kaynak: European Code of Conduct for Research Integrity

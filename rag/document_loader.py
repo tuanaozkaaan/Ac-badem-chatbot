@@ -20,19 +20,25 @@ class LoadedDbChunk:
 
 
 def load_text_documents(data_dir: str) -> List[str]:
-    """Load all .txt documents from a local directory."""
+    """Load all .txt documents from a local directory recursively."""
     path = Path(data_dir)
     if not path.exists():
         raise FileNotFoundError(f"Data directory not found: {data_dir}")
 
-    documents = []
-    for file_path in sorted(path.glob("*.txt")):
+    documents: List[str] = []
+    loaded_files: List[str] = []
+    for file_path in sorted(path.rglob("*.txt")):
         content = file_path.read_text(encoding="utf-8").strip()
         if content:
             documents.append(content)
+            loaded_files.append(str(file_path))
 
     if not documents:
         raise ValueError(f"No .txt documents found in: {data_dir}")
+    print(f"DEBUG: load_text_documents: loaded_files={len(loaded_files)}")
+    for fp in loaded_files:
+        print(f"DEBUG: load_text_documents: file={fp}")
+    print(f"DEBUG: load_text_documents: loaded_documents={len(documents)}")
     return documents
 
 
