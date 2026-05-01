@@ -103,18 +103,15 @@
         padding: 4px 4px 2px;
       }
 
-      .sidebar-brand-mark {
-        width: 38px;
-        height: 38px;
-        border-radius: 12px;
-        background: linear-gradient(135deg, rgba(61, 122, 238, 0.95), rgba(30, 70, 160, 0.9));
-        color: #fff;
-        font-weight: 700;
-        font-size: 12px;
-        letter-spacing: -0.02em;
-        display: grid;
-        place-items: center;
-        box-shadow: 0 6px 20px rgba(61, 122, 238, 0.35);
+      .sidebar-brand-avatar {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        object-fit: cover;
+        display: block;
+        flex-shrink: 0;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.14);
       }
 
       .sidebar-brand-text {
@@ -277,6 +274,22 @@
         align-items: center;
         justify-content: space-between;
         gap: 16px;
+      }
+
+      .topbar-brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .topbar-avatar {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        object-fit: cover;
+        display: block;
+        flex-shrink: 0;
       }
 
       .topbar-title-block {
@@ -477,6 +490,7 @@
 
       .message-row.assistant {
         justify-content: flex-start;
+        gap: 10px;
       }
 
       .message-row.user {
@@ -489,17 +503,13 @@
       }
 
       .avatar {
-        width: 36px;
-        height: 36px;
-        border-radius: 12px;
-        font-size: 10px;
-        font-weight: 800;
-        letter-spacing: -0.03em;
-        display: grid;
-        place-items: center;
-        color: #fff;
-        background: linear-gradient(145deg, #3d7aee, #1e4a9e);
-        box-shadow: 0 4px 14px rgba(61, 122, 238, 0.35);
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        object-fit: cover;
+        display: block;
+        flex-shrink: 0;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
         border: 1px solid rgba(255, 255, 255, 0.12);
       }
 
@@ -756,8 +766,6 @@
         .avatar {
           width: 32px;
           height: 32px;
-          font-size: 9px;
-          border-radius: 10px;
         }
       }
     </style>
@@ -766,7 +774,11 @@
     <div class="app">
       <aside class="sidebar">
         <div class="sidebar-brand">
-          <div class="sidebar-brand-mark" aria-hidden="true">ACU</div>
+          <img
+            class="sidebar-brand-avatar"
+            src="{% static 'images/avatar.png' %}"
+            alt="ACUdost avatar"
+          />
           <div class="sidebar-brand-text">
             <strong>ACUdost</strong>
             <span>Akademik bilgi asistanı</span>
@@ -785,9 +797,12 @@
       <main class="main">
         <header class="topbar">
           <div class="topbar-inner">
-            <div class="topbar-title-block">
-              <h1>ACUdost</h1>
-              <p class="topbar-tagline">Acıbadem Üniversitesi — resmî kaynaklara dayalı yanıtlar</p>
+            <div class="topbar-brand">
+              <img class="topbar-avatar" src="{% static 'images/avatar.png' %}" alt="ACUdost avatar" />
+              <div class="topbar-title-block">
+                <h1>ACUdost</h1>
+                <p class="topbar-tagline">Acıbadem Üniversitesi — resmî kaynaklara dayalı yanıtlar</p>
+              </div>
             </div>
             <span class="topbar-pill" title="Yerel model + veri tabanı">Yerel RAG</span>
           </div>
@@ -855,6 +870,7 @@
       const sendBtn = document.getElementById("sendBtn");
       const newChatBtn = document.getElementById("newChatBtn");
       const convListEl = document.getElementById("convList");
+      const ASSISTANT_AVATAR_URL = "{% static 'images/avatar.png' %}";
 
       const conversation = [];
       let loadingBubble = null;
@@ -923,10 +939,11 @@
         if (role === "assistant") {
           const aside = document.createElement("div");
           aside.className = "msg-aside";
-          const av = document.createElement("div");
+          const av = document.createElement("img");
           av.className = "avatar";
+          av.src = ASSISTANT_AVATAR_URL;
+          av.alt = "ACUdost avatar";
           av.setAttribute("aria-hidden", "true");
-          av.textContent = "ACU";
           aside.appendChild(av);
           row.appendChild(aside);
         }
@@ -1048,10 +1065,11 @@
         row.className = "message-row assistant";
         const aside = document.createElement("div");
         aside.className = "msg-aside";
-        const av = document.createElement("div");
+        const av = document.createElement("img");
         av.className = "avatar";
+        av.src = ASSISTANT_AVATAR_URL;
+        av.alt = "ACUdost avatar";
         av.setAttribute("aria-hidden", "true");
-        av.textContent = "ACU";
         aside.appendChild(av);
         const main = document.createElement("div");
         main.className = "msg-main";

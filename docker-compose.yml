@@ -36,6 +36,10 @@ services:
       - ./data:/app/data:ro
       # Host templates → container (edit index.html locally, refresh browser; no image rebuild)
       - ./templates:/app/templates:ro
+      # Host project-level static files (e.g. avatar image)
+      - ./static:/app/static
+      # Host project settings/code used by Django runtime
+      - ./acu_chatbot:/app/acu_chatbot
       # Host chatbot code → container (restart web after editing views.py; no image rebuild)
       - ./chatbot:/app/chatbot
 
