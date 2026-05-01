@@ -42,6 +42,8 @@ services:
       - ./acu_chatbot:/app/acu_chatbot
       # Host chatbot code → container (restart web after editing views.py; no image rebuild)
       - ./chatbot:/app/chatbot
+      # Host RAG logic → container (prompt/retrieval updates without image rebuild)
+      - ./rag:/app/rag
 
   db:
     image: postgres:16-alpine

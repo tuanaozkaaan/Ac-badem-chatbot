@@ -45,6 +45,15 @@ _CE_OVERVIEW_FALLBACK = (
     "(ders adları üniversiteye göre değişir). Bilgisayar Programcılığı önlisans programı ayrı bir düzeydedir."
 )
 
+_ENGINEERING_DEPARTMENTS_FILE = "engineering_natural_sciences_departments.txt"
+_ENGINEERING_DEPARTMENTS_FALLBACK = (
+    "Mühendislik ve Doğa Bilimleri Fakültesi şu bölümleri içerir:\n"
+    "- Bilgisayar Mühendisliği\n"
+    "- Biyomedikal Mühendisliği\n"
+    "- Moleküler Biyoloji ve Genetik (MBG)\n\n"
+    "Not: Bu bilgi yerel veri dosyalarından derlenmiştir."
+)
+
 
 def _ce_overview_context_block() -> str:
     """Short CE overview from repo data/ (Docker volume); fallback if file missing."""
@@ -57,6 +66,53 @@ def _ce_overview_context_block() -> str:
     except OSError:
         pass
     return _CE_OVERVIEW_FALLBACK
+
+
+def _engineering_faculty_departments_intent(question: str) -> bool:
+    q = _ascii_fold_turkish(question or "")
+    has_faculty = "muhendislik ve doga bilimleri fakultesi" in q
+    asks_for_list = any(
+        n in q
+        for n in (
+            "hangi bolum",
+            "bolumleri",
+            "bolumler",
+            "icerir",
+            "nelerdir",
+        )
+    )
+    return has_faculty and asks_for_list
+
+
+def _engineering_faculty_departments_reply() -> str:
+    p = Path(__file__).resolve().parent.parent / "data" / _ENGINEERING_DEPARTMENTS_FILE
+    try:
+        if p.is_file():
+            lines = []
+            for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw.strip()
+                if line.startswith("- "):
+                    item = line[2:].strip()
+                    if item:
+                        lines.append(item)
+            if lines:
+                unique: list[str] = []
+                seen: set[str] = set()
+                for item in lines:
+                    key = item.casefold()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    unique.append(item)
+                body = "\n".join(f"- {name}" for name in unique)
+                return (
+                    "Mühendislik ve Doğa Bilimleri Fakültesi şu bölümleri içerir:\n"
+                    f"{body}\n\n"
+                    "Not: Bu bilgi yerel veri dosyalarından derlenmiştir."
+                )
+    except OSError:
+        pass
+    return _ENGINEERING_DEPARTMENTS_FALLBACK
 
 
 def _ascii_fold_turkish(s: str) -> str:
@@ -1748,6 +1804,15 @@ def ask(request):
             if is_tr
             else "I couldn't find clear information about this."
         )
+
+        if _engineering_faculty_departments_intent(question):
+            return _persist_assistant_reply(
+                conv,
+                _engineering_faculty_departments_reply(),
+                attach_followup=False,
+                is_tr=True,
+                question=question,
+            )
 
         # ASCII-fold so Turkish chars and .lower() quirks cannot skip the postal shortcut.
         q_fold = _ascii_fold_turkish(question)

@@ -7,6 +7,7 @@ Ollama URL is OLLAMA_BASE_URL (e.g. http://ollama:11434 in Docker — Compose se
 from dataclasses import dataclass
 import json
 import re
+from pathlib import Path
 from time import perf_counter
 from typing import List, Optional
 
@@ -57,6 +58,7 @@ DEPARTMENT_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
         "biyomedikal mühendisliği",
     ),
 }
+ENGINEERING_FACULTY_LOCAL_DATA_FILE = "engineering_natural_sciences_departments.txt"
 
 
 @dataclass
@@ -163,6 +165,11 @@ class RAGSystem:
         if not self.store:
             raise RuntimeError("Knowledge base not built. Call build_knowledge_base() first.")
 
+        if self._is_engineering_faculty_departments_question(question):
+            local_departments = self._load_engineering_departments_from_local_data()
+            if local_departments:
+                return self._format_engineering_departments_answer(local_departments)
+
         embedding_start = perf_counter()
         query_vector = embed_query(question, self.store.embedding_model_name)
         embedding_ms = (perf_counter() - embedding_start) * 1000
@@ -260,6 +267,9 @@ class RAGSystem:
             "You are a precise question-answering assistant.\n"
             "Use only the context. Do not invent facts.\n"
             "If the context includes a section list, return only those sections as bullet points.\n"
+            "When a user asks which departments a faculty contains (\"hangi bölümleri içerir\"), "
+            "answer with a concise bullet list of department names only.\n"
+            "For department-list answers, end with a short note that the information comes from local data.\n"
             "Ignore announcements and seminars.\n"
             "When listing departments under the Faculty of Engineering and Natural Sciences, "
             "consider ONLY these: Bilgisayar Muhendisligi, Biyomedikal Muhendisligi, "
@@ -326,6 +336,45 @@ class RAGSystem:
             or "fakülte" in normalized
         )
         return has_engineering and has_department
+
+    @staticmethod
+    def _is_engineering_faculty_departments_question(question: str) -> bool:
+        if not RAGSystem._is_engineering_departments_question(question):
+            return False
+        normalized = question.lower()
+        return ("doğa bilimleri" in normalized) or ("doga bilimleri" in normalized)
+
+    def _load_engineering_departments_from_local_data(self) -> List[str]:
+        data_file = Path(self.config.data_dir) / ENGINEERING_FACULTY_LOCAL_DATA_FILE
+        if not data_file.exists():
+            return []
+
+        departments: List[str] = []
+        for raw_line in data_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if line.startswith("- "):
+                item = line[2:].strip()
+                if item:
+                    departments.append(item)
+
+        # Keep unique order in case of accidental duplicate lines.
+        unique_departments: List[str] = []
+        seen: set[str] = set()
+        for department in departments:
+            key = department.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_departments.append(department)
+        return unique_departments
+
+    @staticmethod
+    def _format_engineering_departments_answer(departments: List[str]) -> str:
+        lines = ["Mühendislik ve Doğa Bilimleri Fakültesi şu bölümleri içerir:"]
+        lines.extend(f"- {department}" for department in departments)
+        lines.append("")
+        lines.append("Not: Bu bilgi yerel veri dosyalarından derlenmiştir.")
+        return "\n".join(lines)
 
     @staticmethod
     def _is_engineering_excluded_chunk(question: str, chunk: str) -> bool:

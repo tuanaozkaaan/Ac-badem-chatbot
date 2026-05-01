@@ -1,0 +1,6 @@
+Mühendislik ve Doğa Bilimleri Fakültesi Bölümleri
+
+Mühendislik ve Doğa Bilimleri Fakültesi şu bölümleri içerir:
+- Bilgisayar Mühendisliği
+- Biyomedikal Mühendisliği
+- Moleküler Biyoloji ve Genetik (MBG)
