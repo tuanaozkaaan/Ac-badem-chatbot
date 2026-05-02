@@ -11,6 +11,7 @@ import os
 import unicodedata
 
 from django.http import JsonResponse
+from django.middleware.csrf import get_token
 from django.shortcuts import render
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
@@ -125,7 +126,11 @@ def ask(request):
     # GET responses force the csrftoken cookie so subsequent POSTs can carry the
     # X-CSRFToken header validated by Django's CsrfViewMiddleware.
     if request.method == "GET":
-        return render(request, "index.html")
+        return render(
+            request,
+            "index.html",
+            {"csrf_token_value": get_token(request)},
+        )
 
     try:
         body = json.loads(request.body.decode("utf-8") or "{}")

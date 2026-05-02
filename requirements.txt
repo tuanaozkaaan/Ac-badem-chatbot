@@ -1,17 +1,24 @@
-numpy
-fastapi
-uvicorn
-httpx
-django>=4.2,<6
-psycopg2-binary
-django-cors-headers
-gunicorn
-whitenoise
-requests
-beautifulsoup4
-lxml
-sentence-transformers
-faiss-cpu
-python-dotenv
-playwright
-#llama-cpp-python
+# Runtime dependencies — pinned for reproducible installs across machines.
+# Strategy:
+#   - Bump a package: change its line here, then run a full smoke test / CI.
+#   - For a byte-for-bit lock on a specific OS, after `pip install -r requirements.txt`:
+#         pip freeze > requirements.freeze.txt
+#     (Prefer generating freeze on the same OS you deploy to; wheels differ by platform.)
+#
+beautifulsoup4==4.14.3
+django-cors-headers==4.9.0
+Django==5.2.13
+faiss-cpu==1.13.2
+fastapi==0.136.1
+gunicorn==25.3.0
+httpx==0.28.1
+lxml==6.1.0
+numpy==2.4.4
+playwright==1.59.0
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+requests==2.33.1
+sentence-transformers==5.4.1
+uvicorn==0.46.0
+whitenoise==6.12.0
+# llama-cpp-python

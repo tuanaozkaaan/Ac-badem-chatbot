@@ -1,5 +1,6 @@
 # Virtual environments
 .venv/
+.venv-ci/
 venv/
 env/
 
@@ -32,6 +33,7 @@ db.sqlite3
 db.sqlite3-journal
 media/
 staticfiles/
+.pytest_staticfiles/
 static_root/
 
 # Testing / coverage

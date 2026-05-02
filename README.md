@@ -1,216 +1,167 @@
-# Minimal Local RAG Prototype (Acibadem University)
+# Acibadem Üniversitesi — Yerel RAG Sohbet Asistanı (AcuRate)
 
-This project is a minimal working prototype of a local Retrieval-Augmented Generation (RAG) system.
-It answers questions about Acibadem University using local text files and a local open-source LLM.
+Django tabanlı, **Retrieval-Augmented Generation (RAG)** mimarisiyle çalışan; üniversiteye ait toplanmış metinlerden bağlam üreterek **Ollama** altında çalışan **Gemma** modeliyle yanıt veren bir sohbet prototipi. PostgreSQL’de saklanan gömütlü vektörler (FAISS + **Sentence Transformers**) ile tarayıcı oturumuna bağlı konuşma geçmişi birleştirilmiştir.
 
-## Project Structure
+Bu depo, ders / jüri sunumunda “uçtan uca çalışan, güvenlik ve işletim açısından olgunlaştırılmış bir referans uygulama” olarak değerlendirilebilir.
+
+---
+
+## Mimari Özet
+
+| Katman | Teknoloji | Not |
+|--------|-----------|-----|
+| Web / API | Django 5, Gunicorn (prod), WhiteNoise | HTTP katmanı ince; iş mantığı `chatbot/services` altında |
+| Veri | PostgreSQL | Sayfa, parça, gömü ve konuşma kayıtları |
+| RAG | FAISS, sentence-transformers | Sorgu gömümü ve benzerlik araması |
+| LLM | Ollama (`OLLAMA_MODEL`, örn. `gemma:7b`) | Üretim parametreleri ve zaman aşımı yapılandırılabilir |
+| Ön yüz | Şablon + statik CSS/JS modülleri | CSRF korumalı `fetch`, oturuma bağlı geçmiş |
+
+**Kritik tasarım ilkesi:** `chatbot/services` HTTP’ten bağımsızdır; böylece birim testleri ve ileride DRF ViewSet’lere geçiş sadeleşir.
+
+---
+
+## Güvenlik ve Uyumluluk (Özet Epikriz)
+
+- **Fail-closed üretim:** `DEBUG=0` iken zayıf `SECRET_KEY`, joker `ALLOWED_HOSTS` veya boş CORS listesi uygulamayı başlatmaz (`ImproperlyConfigured`).
+- **CSRF:** `/ask` POST çağrıları için `ensure_csrf_cookie` + istemci tarafında `X-CSRFToken`.
+- **IDOR önleme:** `Conversation.session_key` ile sohbet sahipliği; yetkisiz erişimde **404** (varlık sızdırmamak için bilinçli olarak 403 yerine).
+- **Ağ:** Üretim `docker-compose.yml` içinde `db` ve `ollama` varsayılan olarak host’a port açmaz; geliştirme için `docker-compose.override.yml` kullanılır.
+
+---
+
+## Depo Yapısı (Seçilmiş)
 
 ```text
-.
-├── backend/
-│   ├── __init__.py
-│   ├── api.py
-│   └── run_api.py
-├── data/
-│   ├── acibadem_overview.txt
-│   ├── acibadem_facilities.txt
-│   └── acibadem_admissions.txt
-├── frontend/
-│   └── index.html
-├── model/
-│   ├── __init__.py
-│   └── local_llm.py
-├── rag/
-│   ├── __init__.py
-│   ├── embedding_store.py
-│   ├── document_loader.py
-│   ├── pipeline.py
-│   └── text_splitter.py
-├── main.py
-├── requirements.txt
-└── README.md
+acu_chatbot/          Django proje ayarları (settings_test.py = yalnızca pytest)
+chatbot/
+  api/v1/             HTTP uçları, izinler, serileştirme
+  services/           RAG, LLM, niyet, gömü, orchestrator
+  management/commands/
+rag/                  Belge işleme ve gömü hattı yardımcıları
+static/chatbot/       Ayrıştırılmış CSS/JS
+templates/            index iskeleti
+docker/               entrypoint, Compose ile uyumlu başlatma
+tests/                Pytest: smoke + güvenlik senaryoları
+.github/workflows/  CI (PostgreSQL servis + pytest)
 ```
 
-## What It Does
+---
 
-1. Loads local `.txt` files from `data/`
-2. Splits documents into chunks
-3. Creates embeddings with Sentence Transformers
-4. Stores vectors in FAISS
-5. Retrieves top relevant chunks for a question
-6. Uses a local GGUF LLM (via `llama-cpp-python`) to generate an answer only from retrieved context
-7. Returns a fallback message when the information is not available
+## Hızlı Başlangıç (Docker)
 
-## Setup
-
-1. Create and activate a virtual environment:
+1. `.env.example` dosyasını `.env` olarak kopyalayın ve **REQUIRED** alanları doldurun.
+2. Geliştirme deneyimi için override dosyasının varlığını doğrulayın (`docker-compose.override.yml`).
+3. Ayağa kaldırma:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+docker compose up --build
 ```
 
-2. Create your `.env`:
+Web konteyneri migrasyon ve (yumuşak hata ile) `ollama_pull` çalıştırır; üretim modunda Gunicorn, geliştirmede `runserver` kullanılır (`DJANGO_DEBUG`).
+
+**Veri kalıcılığı:** `docker compose down -v` kalıcı veri hacmini siler; dokümantasyon ve ekip içi uyarılarda bu komuttan kaçının.
+
+---
+
+## Yerel Geliştirme (Docker dışı)
 
 ```bash
-cp .env.example .env
+python -m venv .venv
+.\.venv\Scripts\activate   # Windows
+pip install -r requirements-dev.txt
 ```
 
-### Data persistence (very important)
-
-- PostgreSQL data is stored in a **Docker named volume** (`postgres_data`) so it will **survive**:
-  - machine reboots
-  - `docker compose restart`
-  - `git pull` / code changes
-  - teammates changing code (your local volume stays local)
-- The project sets `COMPOSE_PROJECT_NAME=acbadem_chatbot` in `.env` so the volume name stays stable even if you rename the folder.
-- **Do not run** `docker compose down -v`. This will delete the database volume and permanently remove all scraped/chunked/embedded data.
-
-3. Install dependencies:
+PostgreSQL ayarlarını `.env` üzerinden verin (`POSTGRES_HOST`, `POSTGRES_PORT`, …). Ardından:
 
 ```bash
-pip install -r requirements.txt
-```
-
-4. Start PostgreSQL (Docker, host port 5433) and run migrations:
-
-```bash
-docker compose up -d db
 python manage.py migrate
+python manage.py create_embeddings   # RAG için gerekli
 ```
 
-5. Create embeddings (stores vectors in `ChunkEmbedding`):
+---
+
+## Testler (Pytest)
+
+Üretim şemasında **PostgreSQL `ArrayField`** kullanıldığı için test ayarı (`acu_chatbot.settings_test`) SQLite yerine Postgres’e bağlanır.
+
+**Tek seferlik test veritabanı** (örnek; kullanıcı adınızı kullanın):
 
 ```bash
-python manage.py create_embeddings
+docker compose exec db psql -U acibadem -d acibadem_db -c "CREATE DATABASE acibadem_test OWNER acibadem;"
 ```
 
-6. Download a local GGUF model (example: TinyLlama or Mistral instruct GGUF) and note its path.
+Çalıştırma (Windows PowerShell örneği):
 
-## PostgreSQL (Local Dev)
+```powershell
+$env:POSTGRES_HOST = "127.0.0.1"
+$env:POSTGRES_PORT = "5433"
+$env:POSTGRES_USER = "acibadem"
+$env:POSTGRES_PASSWORD = "…"
+$env:POSTGRES_DB = "acibadem_db"
+$env:POSTGRES_TEST_DB = "acibadem_test"
+pytest tests/ -q
+```
 
-This project uses **PostgreSQL** (not SQLite). Database config is read from environment variables:
+Senaryolar: **smoke** (`/health`, arayüz GET, konuşma listesi) ve **security** (CSRF reddi, IDOR’da 404, üretimde zayıf secret reddi).
 
-- `POSTGRES_HOST` (default: `localhost`)
-- `POSTGRES_PORT` (default: `5433`)
-- `POSTGRES_DB` (default: `acibadem_db`)
-- `POSTGRES_USER` (default: `admin`)
-- `POSTGRES_PASSWORD` (default: `admin`)
+---
 
-If you see:
+## CI / CD (GitHub Actions)
 
-`OperationalError: ... FATAL: role "acibadem" does not exist`
+`.github/workflows/main.yml` görevleri:
 
-it means the configured Postgres user/role is missing in the Postgres instance you are connecting to.
+- PostgreSQL 16 servis konteyneri
+- `pip install -r requirements-dev.txt`
+- `pytest tests/`
 
-### Option A (recommended): use Docker Postgres from `docker-compose.yml`
+Dal adınız `main` dışındaysa workflow’daki `branches` listesini güncelleyin.
 
-The `db` service is exposed on host port **5433** by default.
+---
+
+## Bağımlılık Sabitleme Stratejisi
+
+**Amacımız:** “Yarın bir transitif güncelleme geldi ve sistem davranışı sessizce değişti” riskini azaltmak.
+
+1. **Doğrudan bağımlılıklar** `requirements.txt` içinde `==` ile sabitlenir (mevcut üretim kurulumu ile uyumlu sürümler).
+2. **Geliştirici / CI araçları** `requirements-dev.txt` içinde tutulur (`-r requirements.txt` + pytest stack).
+3. İleride **tam ünite replay** için aynı işletim sistemi üzerinde şu çıktıyı arşivlemek mümkündür:
 
 ```bash
-docker compose up -d db
-cp .env.example .env
-python3 manage.py migrate
-python3 manage.py create_embeddings
+pip install -r requirements-dev.txt
+pip freeze > requirements.freeze.txt
 ```
 
-### Option B: use your local Postgres (port 5432)
+> **Not:** `pip freeze` çıktısı tekerlek (wheel) ve platforma bağlıdır; Linux üretim imajı için donmuş listeyi tercihen Linux ortamında üretin.
 
-Create the role + database (adjust password if you want):
+Dockerfile, PyTorch’u CPU indeksinden ayrı kurmaya devam eder; `requirements.txt` içindeki `torch`/`sentence-transformers` çift kaynak çakışmasını önlemek için imaj içi kurulum sırasına bakınız.
+
+---
+
+## Veri Toplama ve RAG Üretimi
+
+Kamu sayfalarına saygılı tarama ve OBS desteği için:
 
 ```bash
-psql postgres -c "CREATE ROLE acibadem WITH LOGIN PASSWORD 'acibadem' CREATEDB;"
-psql postgres -c "CREATE DATABASE acibadem OWNER acibadem;"
+python manage.py ingest_acibadem --max-pages 150 --min-delay 1 --max-delay 2
 ```
 
-Then run migrations:
+Gömüleri güncellemek için `create_embeddings` komutunu kullanın.
 
-```bash
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-export POSTGRES_DB=acibadem_db
-export POSTGRES_USER=admin
-export POSTGRES_PASSWORD=admin
-python3 manage.py migrate
-python3 manage.py create_embeddings
-```
+---
 
-### Quick test
+## Eski / Alternatif Giriş Noktaları
 
-```bash
-python3 manage.py shell
-```
+Depoda tarihsel olarak `main.py`, `backend/` FastAPI prototipi vb. bulunabilir; canlı ürün yolu **Django + `chatbot/api/v1`** kabul edilir.
 
-```python
-from chatbot.models import ScrapedPage, PageChunk
-ScrapedPage.objects.count(), PageChunk.objects.count()
-```
+---
 
-### Data check (counts)
+## Katkı ve Ekip İşbölümü
 
-```bash
-docker compose exec web python manage.py shell -c "from chatbot.models import ScrapedPage, PageChunk, ChunkEmbedding; print('pages=', ScrapedPage.objects.count()); print('chunks=', PageChunk.objects.count()); print('embeddings=', ChunkEmbedding.objects.count())"
-```
+- `docker-compose.yml` üretim odaklı; `docker-compose.override.yml` yerel bind-mount ve portları taşır — dal çatışmalarını azaltmak için kasıtlı ayrım.
+- Statik ön yüz dosyaları modülerleştirilmiştir (`static/chatbot/js/*.js`).
 
-## Run
+---
 
-### CLI (existing)
+## Lisans ve Sorumluluk
 
-Single question:
-
-```bash
-python main.py --model-path /path/to/your/model.gguf --question "Where is Acibadem University located?"
-```
-
-Interactive mode:
-
-```bash
-python main.py --model-path /path/to/your/model.gguf
-```
-
-Type `exit` to stop interactive mode.
-
-### Backend API
-
-Start backend API:
-
-```bash
-python -m backend.run_api --model-path /path/to/your/model.gguf --host 127.0.0.1 --port 8000
-```
-
-## Notes
-
-- This is a demo-first baseline intended for later expansion to Django + PostgreSQL + Docker.
-- You can add more local files into `data/` to improve answer quality.
-- The fallback sentence is:
-  `The requested information is not available in the provided context.`
-
-## Responsible Data Ingestion (New)
-
-This project now includes a production-oriented ingestion pipeline for Acibadem public pages:
-
-- Respects `robots.txt` for each domain
-- Crawls only allowed public pages under:
-  - `https://www.acibadem.edu.tr`
-  - `https://obs.acibadem.edu.tr`
-- Uses request delays (`1-2` seconds by default), max page cap, visited URL tracking, and duplicate prevention
-- Cleans noisy HTML (nav/header/footer/boilerplate) and stores normalized content in PostgreSQL
-- Supports optional Playwright fallback for JS-heavy OBS pages
-
-Run ingestion:
-
-```bash
-python manage.py ingest_acibadem --max-pages 150 --min-delay 1 --max-delay 2 --log-level INFO
-```
-
-Optional Playwright fallback:
-
-```bash
-python manage.py ingest_acibadem --enable-playwright-obs
-```
-
-Docker run:
-
-```bash
-docker compose exec web python manage.py ingest_acibadem --max-pages 150
-```
+Proje eğitim ve araştırma amaçlıdır; üretimde kullanımdan önce güvenlik gözden geçirmesi, yedekleme ve gözlemlenebilirlik (log/metrics) eklenmelidir.

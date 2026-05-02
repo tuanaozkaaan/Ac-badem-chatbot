@@ -27,7 +27,6 @@ from chatbot.services.context_select import (
     _context_likely_relevant,
     _select_context_for_llm,
     _strip_urls_plain_text,
-    _thread_suggests_acibadem_topic,
 )
 from chatbot.services.conversation_repo import (
     build_assistant_reply,
@@ -37,17 +36,13 @@ from chatbot.services.embedding import _retrieve_top_chunks_by_embedding
 from chatbot.services.extractive import _try_extractive_answer
 from chatbot.services.intents import (
     _asks_subunits_of_named_faculty,
-    _canonical_campus_address_reply,
     _ce_overview_context_block,
     _cs_engineering_course_catalog_intent,
     _cs_engineering_lisans_intent,
-    _engineering_faculty_departments_intent,
-    _engineering_faculty_departments_reply,
     _faculty_department_catalog_intent,
     _general_acibadem_intro_intent,
     _green_or_sustainable_campus_question,
     _is_extractive_question,
-    _wants_postal_address_detail,
 )
 from chatbot.services.language import (
     _ascii_fold_turkish,
@@ -94,16 +89,7 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
             else "I couldn't find clear information about this."
         )
 
-        if _engineering_faculty_departments_intent(question):
-            return build_assistant_reply(
-                conv,
-                _engineering_faculty_departments_reply(),
-                attach_followup=False,
-                is_tr=True,
-                question=question,
-            )
-
-        # ASCII-fold so Turkish chars and .lower() quirks cannot skip the postal shortcut.
+        # ASCII-fold so Turkish chars and .lower() quirks cannot skip intent detectors.
         q_fold = _ascii_fold_turkish(question)
         campus_green_q = _green_or_sustainable_campus_question(question)
         address_intent = (not campus_green_q) and any(
@@ -119,17 +105,6 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
                 "nerede",
             )
         )
-        if _wants_postal_address_detail(q_fold) and (
-            "acibadem" in q_fold or _thread_suggests_acibadem_topic(conv)
-        ):
-            return build_assistant_reply(
-                conv,
-                _canonical_campus_address_reply(is_tr),
-                attach_followup=True,
-                is_tr=is_tr,
-                question=question,
-            )
-
         cs_eng_q = _cs_engineering_lisans_intent(question)
         cs_course_catalog_q = _cs_engineering_course_catalog_intent(question)
         dept_cat = _faculty_department_catalog_intent(question)

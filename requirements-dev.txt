@@ -1,0 +1,5 @@
+# Developer / CI dependencies (install on top of runtime).
+-r requirements.txt
+
+pytest==9.0.3
+pytest-django==4.12.0

@@ -112,7 +112,7 @@ def _context_likely_relevant(question: str, context: str) -> bool:
     terms = [w for w in re.findall(r"[\w]+", qf) if len(w) >= 4 and w not in overlap_skip][:16]
     long_hits = sum(1 for t in terms if len(t) >= 8 and t in ctxf)
     short_hits = sum(1 for t in terms if 4 <= len(t) < 8 and t in ctxf)
-    if long_hits >= 1 or short_hits >= 2:
+    if long_hits >= 1 or short_hits >= 1:
         return True
 
     # Cross-language guard: TR question may map to EN context (or vice versa).

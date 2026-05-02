@@ -5,9 +5,9 @@
  * a clean root.
  */
 
-// Same-origin by default so it works with both runserver and Docker port mappings.
-const API_URL = "/ask";
-const API_CONV = "/api/conversations/";
+// Same-origin; versioned paths match ``path("api/v1/", include("chatbot.urls"))``.
+const API_URL = "/api/v1/ask";
+const API_CONV = "/api/v1/conversations/";
 
 /* Embedding matrisi ilk yüklemede + Ollama yavaşsa 4 dk yetmez; 7 dk. */
 const FETCH_TIMEOUT_MS = 420000;
@@ -20,10 +20,22 @@ const ASSISTANT_AVATAR_URL = (document.body && document.body.dataset.avatarUrl) 
 function getCookie(name) {
   const cookies = document.cookie ? document.cookie.split(";") : [];
   for (const raw of cookies) {
-    const [k, v] = raw.trim().split("=");
-    if (k === name) return decodeURIComponent(v || "");
+    const [k, ...rest] = raw.trim().split("=");
+    if (k === name) return decodeURIComponent((rest.length ? rest.join("=") : "") || "");
   }
   return null;
+}
+
+/**
+ * CSRF value for X-CSRFToken: prefer server-injected body attribute (always in
+ * sync with the cookie set by ensure_csrf_cookie), fall back to reading csrftoken.
+ */
+function getCsrfToken() {
+  const el = document.body;
+  const fromDom = el && el.dataset && el.dataset.csrfToken ? String(el.dataset.csrfToken).trim() : "";
+  if (fromDom) return fromDom;
+  const fromCookie = getCookie("csrftoken");
+  return fromCookie ? String(fromCookie).trim() : "";
 }
 
 /**
@@ -35,17 +47,23 @@ function getCookie(name) {
  * Returns the raw Response so callers keep full control over body parsing.
  */
 async function fetchJSON(url, { method = "GET", body, headers, signal } = {}) {
-  const init = { method, headers: { ...(headers || {}) }, signal };
+  const headerMap = { ...(headers || {}) };
+  const init = {
+    method,
+    headers: headerMap,
+    signal,
+    credentials: "same-origin",
+  };
   if (body !== undefined) {
     init.body = typeof body === "string" ? body : JSON.stringify(body);
-    if (!init.headers["Content-Type"]) {
-      init.headers["Content-Type"] = "application/json";
+    if (!headerMap["Content-Type"] && !headerMap["content-type"]) {
+      headerMap["Content-Type"] = "application/json";
     }
   }
   const upper = String(method).toUpperCase();
   if (upper !== "GET" && upper !== "HEAD") {
-    const csrf = getCookie("csrftoken");
-    if (csrf) init.headers["X-CSRFToken"] = csrf;
+    const csrf = getCsrfToken();
+    if (csrf) headerMap["X-CSRFToken"] = csrf;
   }
   return fetch(url, init);
 }

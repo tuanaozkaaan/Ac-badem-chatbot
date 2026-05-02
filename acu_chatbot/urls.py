@@ -6,4 +6,6 @@ urlpatterns = [
     path("", include("chatbot.urls")),
     # Also expose chatbot endpoints under /api/* for clients that assume an API prefix.
     path("api/", include("chatbot.urls")),
+    # Versioned prefix for integrations expecting /api/v1/* (same view module).
+    path("api/v1/", include("chatbot.urls")),
 ]

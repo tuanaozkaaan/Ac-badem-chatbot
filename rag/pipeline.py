@@ -70,7 +70,8 @@ class RAGConfig:
     top_k: int = 7
     # IndexFlatL2 / embed_query: squared L2 on normalized vectors. Larger = worse match.
     # Reject when best match is worse than this (strict inequality: > threshold => no context).
-    max_distance_threshold: float = 2.0
+    # Slightly relaxed vs. 2.0 so marginal FAISS / L2 hits still yield context (CLI / non-Django path).
+    max_distance_threshold: float = 2.35
 
 
 class RAGSystem:

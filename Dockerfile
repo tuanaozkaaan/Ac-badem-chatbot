@@ -21,7 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /app/requirements.txt
 
 # Zaman aşımını artırarak kur
+# Zaman aşımını artırarak ve Torch'u ZORLA CPU versiyonuyla kurarak ilerle
 RUN pip install --upgrade pip && \
+    pip install torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --default-timeout=1000 --no-cache-dir -r /app/requirements.txt
 
 # Playwright Chromium + sistem bağımlılıkları (slim imajda --with-deps gerekli)

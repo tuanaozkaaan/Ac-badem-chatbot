@@ -13,6 +13,7 @@ Allowed dependency direction: embedding has no fan-out into other services.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -129,10 +130,30 @@ def _retrieve_top_chunks_by_embedding(
 
     sims = mat @ qv
     order = np.argsort(-sims)
-    top_idx = order[: max(1, min(int(k), len(order)))]
+    k_eff = max(1, min(int(k), len(order)))
+    # Examine extra candidates so a similarity floor can still return up to k_eff chunks.
+    pool = min(len(order), max(k_eff * 5, k_eff + 16))
+    top_idx = order[:pool]
+
+    # Min cosine similarity (cosine = dot product on L2-normalized rows). Lower = more permissive.
+    # If nothing meets the bar, fall back to plain top-k so "veri yok" does not trigger from this gate alone.
+    raw_min = (os.environ.get("ACU_EMBEDDING_MIN_COSINE") or "0.65").strip()
+    try:
+        min_cos = float(raw_min)
+    except ValueError:
+        min_cos = 0.65
+    min_cos = max(0.0, min(min_cos, 0.999))
+
+    picked: list[int] = []
+    for i in top_idx:
+        if float(sims[int(i)]) >= min_cos:
+            picked.append(int(i))
+        if len(picked) >= k_eff:
+            break
+    use_idx = picked if picked else [int(i) for i in top_idx[:k_eff]]
 
     out: list[dict] = []
-    for i in top_idx:
+    for i in use_idx:
         base_row = metas[int(i)]
         row = {
             "chunk_id": base_row["chunk_id"],
