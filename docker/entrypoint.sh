@@ -11,6 +11,9 @@ python manage.py migrate --noinput
 echo "[entrypoint] collecting static files"
 python manage.py collectstatic --noinput
 
+echo "[entrypoint] ensuring Ollama model is available"
+python manage.py ollama_pull || echo "[entrypoint] ollama_pull failed; web will start anyway"
+
 if [ "${DJANGO_DEBUG:-0}" = "1" ]; then
     echo "[entrypoint] starting Django dev server (DJANGO_DEBUG=1)"
     exec python manage.py runserver 0.0.0.0:8000
