@@ -1,0 +1,33 @@
+# Local development overrides automatically merged on top of docker-compose.yml.
+#
+# Goal: keep the team's `docker compose up` workflow unchanged while keeping the base
+# stack production-friendly. CI/prod environments must invoke compose explicitly without
+# this override:
+#   docker compose -f docker-compose.yml up -d
+
+services:
+  web:
+    environment:
+      DJANGO_DEBUG: "1"
+      # `web` is the in-network hostname; needed when other containers hit the dev server.
+      DJANGO_ALLOWED_HOSTS: "127.0.0.1,localhost,web"
+    # Source bind-mounts let teammates edit Python/HTML/static assets and see changes
+    # without rebuilding the image. Restart the `web` service to pick up Python changes.
+    volumes:
+      - ./data:/app/data
+      - ./templates:/app/templates
+      - ./static:/app/static
+      - ./acu_chatbot:/app/acu_chatbot
+      - ./chatbot:/app/chatbot
+      - ./rag:/app/rag
+      - ./scripts:/app/scripts
+
+  db:
+    # Expose Postgres on the host so engineers can attach pgAdmin/psql locally.
+    ports:
+      - "${POSTGRES_EXPOSE_PORT:-5433}:5432"
+
+  ollama:
+    # Expose Ollama for direct CLI debugging (`ollama list`, `ollama pull`) from the host.
+    ports:
+      - "11434:11434"

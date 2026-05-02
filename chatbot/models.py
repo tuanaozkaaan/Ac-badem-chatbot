@@ -74,9 +74,15 @@ class PageChunk(models.Model):
 
 
 class Conversation(models.Model):
-    """UI chat session persisted for history across reloads."""
+    """UI chat session persisted for history across reloads.
+
+    ``session_key`` ties a row to a single browser session. Empty ``""`` means
+    "unowned" — pre-F9 rows kept for backward compatibility; nothing reads them
+    via the API anymore. New rows always carry a non-empty session key.
+    """
 
     title = models.CharField(max_length=200, blank=True, default="")
+    session_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
