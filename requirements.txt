@@ -5,6 +5,8 @@ httpx
 django>=4.2,<6
 psycopg2-binary
 django-cors-headers
+gunicorn
+whitenoise
 requests
 beautifulsoup4
 lxml

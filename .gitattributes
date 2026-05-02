@@ -1,0 +1,27 @@
+# Force LF for files that must run inside Docker images regardless of host OS.
+# Prevents the classic "/bin/sh^M: bad interpreter" failure when teammates on
+# Windows commit shell scripts with CRLF line endings.
+*.sh           text eol=lf
+docker/*       text eol=lf
+Dockerfile     text eol=lf
+
+# Python sources should also stay LF to keep diffs stable across platforms.
+*.py           text eol=lf
+
+# Generic text formats that benefit from explicit LF normalization.
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.json         text eol=lf
+*.toml         text eol=lf
+*.md           text eol=lf
+*.html         text eol=lf
+*.css          text eol=lf
+*.js           text eol=lf
+
+# Binary assets: never normalize line endings.
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.webp         binary
+*.pdf          binary

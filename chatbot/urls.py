@@ -1,7 +1,10 @@
 from django.urls import path
 
-from . import views
+from chatbot.api.v1 import views
 
+# URL string contract: kept identical to the legacy layout so the frontend (and any
+# external clients) keep working unchanged. The view callables now live in
+# ``chatbot.api.v1.views``; ``chatbot.views`` remains as a re-export shim.
 urlpatterns = [
     path("conversations/", views.conversations_root),
     path("conversations/<int:pk>/", views.conversations_detail),
