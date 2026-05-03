@@ -5,6 +5,13 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+# Defaults are kept in sync with the single source of truth in
+# ``rag.document_loader`` so that ``build_faiss_index`` / ``embed_query``
+# can never silently disagree with what ``ChunkEmbedding`` rows were
+# encoded with — a dimension mismatch (wrong model) causes empty
+# retrieval and is one of the easier ways to break a RAG demo.
+from rag.document_loader import EXPECTED_EMBEDDING_MODEL
+
 
 @dataclass
 class VectorStore:
@@ -16,7 +23,7 @@ class VectorStore:
 def complete_embedding_matrix(
     chunks: List[str],
     per_row: Sequence[Optional[np.ndarray]],
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    embedding_model_name: str = EXPECTED_EMBEDDING_MODEL,
 ) -> np.ndarray:
     """
     Build a (n, dim) matrix: use precomputed row vectors when present, encode missing
@@ -54,7 +61,7 @@ def complete_embedding_matrix(
 
 def build_faiss_index(
     chunks: List[str],
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    embedding_model_name: str = EXPECTED_EMBEDDING_MODEL,
     precomputed_vectors: Optional[np.ndarray] = None,
 ) -> VectorStore:
     """

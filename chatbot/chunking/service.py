@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import Iterable
 
@@ -13,9 +13,53 @@ from chatbot.models import PageChunk, ScrapedPage
 WHITESPACE_RE = re.compile(r"[ \t]+")
 EXCESS_NEWLINES_RE = re.compile(r"\n{3,}")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9ÇĞİÖŞÜ])")
+
+# Heading detector. Three flavours, intentionally conservative so that we
+# do NOT misclassify ordinary Turkish sentences as headings:
+#   1. Markdown ATX headings:                    ``# ... `` ... ``###### ...``
+#   2. ALL-CAPS short title lines (TR diacritics aware) of <= 80 chars
+#      and at least one space (so single shouty words like "DİKKAT" are not
+#      treated as a heading by themselves).
+#   3. Multi-level numbered headings only:       ``1.2 ...``, ``2.3.1 ...``.
+#      Single-number prefixes (``4 yıllık eğitimin ...``) are *not* matched —
+#      treating them as headings would shred ordinary sentences and starve
+#      short, fact-rich pages of their already-tiny body.
 HEADING_LINE_RE = re.compile(
-    r"^(#{1,6}\s+.+|[A-Z0-9ÇĞİÖŞÜ][A-Z0-9ÇĞİÖŞÜ \-:]{5,}|(\d+(\.\d+)*)\s+.+)$"
+    r"^("
+    r"#{1,6}\s+.+"
+    r"|[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 \-:]{4,78}\s+[A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9 \-:]*"
+    r"|\d+(?:\.\d+)+\s+.+"
+    r")$"
 )
+
+
+# ---------------------------------------------------------------------------
+# Content-type aware thresholds
+# ---------------------------------------------------------------------------
+# Some legitimately short, fact-rich pages (Bologna info tabs, contact pages,
+# graduation requirements, department head, ...) carry decisive information
+# inside ~100-200 chars / 10-20 words, which would otherwise be filtered out
+# by the default low-value thresholds tuned for long-form prose. We relax the
+# filter for an explicit allow-list so the RAG retriever can still serve a
+# question like "Bilgisayar Mühendisliği bölüm başkanı kim?" or
+# "Bilgisayar Mühendisliği iletişim bilgisi" with a real chunk.
+DEFAULT_SHORT_CONTENT_TYPES: frozenset[str] = frozenset({
+    "bologna_profile",
+    "bologna_officials",
+    "bologna_degree",
+    "bologna_admission",
+    "bologna_further_studies",
+    "bologna_graduation",
+    "bologna_prior_learning",
+    "bologna_qualification_rules",
+    "bologna_occupation",
+    "bologna_academic_staff",
+    "bologna_contact",
+    "bologna_about",
+    "bologna_goals",
+    "bologna_outcomes",
+    "contact",
+})
 
 
 @dataclass(frozen=True)
@@ -25,6 +69,10 @@ class ChunkingConfig:
     min_chunk_chars: int = 120
     min_word_count: int = 20
     max_chunks_per_page: int = 200
+
+    short_content_types: frozenset[str] = DEFAULT_SHORT_CONTENT_TYPES
+    short_content_min_chars: int = 40
+    short_content_min_words: int = 5
 
 
 @dataclass(frozen=True)
@@ -85,8 +133,13 @@ def _split_semantic_sections(text: str) -> list[str]:
         if section:
             sections.append(section)
 
-    # If we detected no meaningful heading structure, use single block.
-    if heading_count == 0:
+    # A page with zero or a single heading is treated as a single block.
+    # Splitting on a lone heading produces a tiny "title only" section
+    # plus a tiny "body" section; both then fall under the low-value
+    # filter even though the combined block is meaningful (this happens
+    # routinely on Bologna info tabs that have one ``# Heading`` plus a
+    # 1-2 sentence body).
+    if heading_count <= 1:
         return [text]
     return sections or [text]
 
@@ -212,6 +265,34 @@ def _estimate_token_count(text: str) -> int:
     return max(1, round(len(text) / 4))
 
 
+def resolve_config_for_content_type(
+    content_type: str | None,
+    config: ChunkingConfig,
+) -> ChunkingConfig:
+    """Return a per-page effective ``ChunkingConfig``.
+
+    For content types in :pyattr:`ChunkingConfig.short_content_types`
+    the ``min_chunk_chars`` / ``min_word_count`` filters are relaxed to
+    ``short_content_min_chars`` / ``short_content_min_words`` so that
+    fact-rich short pages (department head names, graduation rules,
+    contact tabs, ...) are not silently dropped during chunking. The
+    alphanumeric-ratio filter and the per-page chunk cap are kept
+    untouched — those remain useful guard-rails against pure-noise pages.
+    """
+    if content_type and content_type in config.short_content_types:
+        if (
+            config.min_chunk_chars == config.short_content_min_chars
+            and config.min_word_count == config.short_content_min_words
+        ):
+            return config
+        return replace(
+            config,
+            min_chunk_chars=config.short_content_min_chars,
+            min_word_count=config.short_content_min_words,
+        )
+    return config
+
+
 def generate_chunks_for_content(content: str, config: ChunkingConfig) -> list[str]:
     normalized = _normalize_text(content)
     if not normalized:
@@ -238,17 +319,61 @@ def chunk_single_page(
     force: bool = False,
     dry_run: bool = False,
 ) -> ChunkingResult:
+    """Generate (or refresh) the PageChunk rows for a single ScrapedPage.
+
+    Metadata propagation (Step 3.4 of the data ingestion plan):
+        Each chunk inherits a *full shallow copy* of the parent
+        ``ScrapedPage.metadata`` blob (faculty, department, content_type,
+        course_code, semester, related_urls, contact_emails, ...). This
+        denormalisation lets the RAG retriever apply WHERE-clauses on
+        chunk metadata without joining back to the page row.
+
+    Idempotency rules:
+        * If the parent's content hash is unchanged AND the chunk rows
+          already match it, we do NOT regenerate the chunks. We DO,
+          however, refresh their metadata if the parent's metadata blob
+          was updated by a later ingest (returns ``metadata_refreshed``).
+        * ``--force`` always rebuilds the chunks from scratch.
+
+    Possible ``ChunkingResult.action`` values:
+        ``processed``           — chunks were (re)built and stored.
+        ``skipped``             — content unchanged, metadata identical.
+        ``metadata_refreshed``  — content unchanged, but parent metadata
+                                  changed and was synced down to chunks.
+        ``dry_run``             — dry-run mode; nothing was written.
+    """
+    parent_metadata = dict(page.metadata or {})
+    effective_config = resolve_config_for_content_type(
+        parent_metadata.get("content_type"),
+        config,
+    )
+
     existing_qs = PageChunk.objects.filter(scraped_page=page)
     has_up_to_date_chunks = existing_qs.filter(page_content_hash=page.content_hash).exists()
     if not force and has_up_to_date_chunks:
+        if dry_run:
+            return ChunkingResult(
+                action="skipped",
+                page_id=page.id,
+                chunks_created=0,
+                reason="unchanged_content",
+            )
+        # PostgreSQL ``jsonb`` equality is order-insensitive, so
+        # ``exclude(metadata=parent_metadata)`` matches only chunks whose
+        # blob differs from the parent. The UPDATE is a no-op when
+        # everything is already in sync, keeping log noise low.
+        synced = existing_qs.exclude(metadata=parent_metadata).update(
+            metadata=parent_metadata
+        )
+        action = "metadata_refreshed" if synced > 0 else "skipped"
         return ChunkingResult(
-            action="skipped",
+            action=action,
             page_id=page.id,
             chunks_created=0,
             reason="unchanged_content",
         )
 
-    chunks = generate_chunks_for_content(page.content, config)
+    chunks = generate_chunks_for_content(page.content, effective_config)
     if not chunks:
         if dry_run:
             return ChunkingResult(action="dry_run", page_id=page.id, chunks_created=0, reason="no_chunks")
@@ -275,6 +400,7 @@ def chunk_single_page(
                 url=page.url,
                 char_count=len(chunk_text),
                 token_count_estimate=_estimate_token_count(chunk_text),
+                metadata=parent_metadata,
             )
         )
 

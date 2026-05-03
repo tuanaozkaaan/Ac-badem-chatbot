@@ -56,6 +56,7 @@ class Command(BaseCommand):
 
         processed_pages = 0
         skipped_pages = 0
+        metadata_refreshed_pages = 0
         chunk_count = 0
 
         for page in pages.iterator(chunk_size=50):
@@ -69,6 +70,12 @@ class Command(BaseCommand):
             if result.action == "skipped":
                 skipped_pages += 1
                 continue
+            if result.action == "metadata_refreshed":
+                # Content unchanged, but ScrapedPage.metadata was updated
+                # by a later ingest run; chunks just got their copy
+                # synced down. No chunks were rebuilt.
+                metadata_refreshed_pages += 1
+                continue
 
             processed_pages += 1
             chunk_count += result.chunks_created
@@ -77,7 +84,9 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"Chunking completed [{mode}] - processed_pages={processed_pages}, "
-                f"skipped_pages={skipped_pages}, total_chunks={chunk_count}"
+                f"skipped_pages={skipped_pages}, "
+                f"metadata_refreshed_pages={metadata_refreshed_pages}, "
+                f"total_chunks={chunk_count}"
             )
         )
 

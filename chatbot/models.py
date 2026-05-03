@@ -17,6 +17,12 @@ class ScrapedPage(models.Model):
     source_type = models.CharField(max_length=16, choices=SOURCE_CHOICES, db_index=True)
     content = models.TextField()
     content_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    # Structured retrieval metadata (faculty, department, content_type,
+    # course_code, semester, related_urls, contact_emails, ...). Populated
+    # by ``chatbot.ingestion.metadata_enricher`` during ingestion. The
+    # chunking layer denormalises selected keys onto each PageChunk so
+    # the RAG retriever can filter without joining back to the page row.
+    metadata = models.JSONField(default=dict, blank=True)
     crawled_at = models.DateTimeField(auto_now=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -54,6 +60,11 @@ class PageChunk(models.Model):
     url = models.URLField(max_length=1024, db_index=True)
     char_count = models.PositiveIntegerField(default=0)
     token_count_estimate = models.PositiveIntegerField(default=0)
+    # Copy of the parent ScrapedPage.metadata (or an enriched subset)
+    # written by the chunking service. Keeping it on the chunk row lets
+    # the retriever apply per-chunk filters (course_code, semester,
+    # content_type, ...) without joining back to ScrapedPage.
+    metadata = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -130,7 +141,10 @@ class ChunkEmbedding(models.Model):
     )
     # Vektörleri JSON formatında (liste olarak) saklayacağız
     vector = models.JSONField() 
-    embedding_model = models.CharField(max_length=255, default="sentence-transformers/all-MiniLM-L6-v2")
+    embedding_model = models.CharField(
+        max_length=255,
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    )
     embedding_dim = models.PositiveIntegerField()
     chunk_hash = models.CharField(max_length=64, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)

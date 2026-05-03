@@ -13,8 +13,13 @@ from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup
 
 from .config import CrawlConfig
-from .content_cleaner import clean_html_to_text, content_hash
+from .content_cleaner import (
+    clean_html_to_document,
+    clean_plain_text,
+    content_hash,
+)
 from .fetchers import Fetcher, FetchResult
+from .metadata_enricher import enrich_from_url, merge_extracted_artifacts
 from .storage import upsert_page
 from .url_policy import is_allowed_domain, normalize_url, resolve_link, should_skip_url, source_type_for_url
 
@@ -45,15 +50,44 @@ class ResponsibleCrawler:
         self._queue: list[tuple[int, int, str]] = []
         self._counter = 0
 
-    def _text_from_fetch(self, fetch_result: FetchResult) -> tuple[str, str, str]:
-        """HTML + optional Playwright frame inner_text birleşimi; başlık için page.title tercihi."""
-        text, title, section = clean_html_to_text(
-            fetch_result.html, max_chars=self.config.max_content_chars
+    def _text_from_fetch(
+        self, fetch_result: FetchResult
+    ) -> tuple[str, str, str, list[str], list[str]]:
+        """HTML + optional Playwright frame inner_text birleşimi; başlık
+        için ``page.title`` tercihi.
+
+        Aşağıdaki ek yan ürünleri de döndürür:
+          * ``urls``  — body içinde geçen ve kaldırılan URL'lerin listesi
+          * ``emails`` — body içinde geçen ve kaldırılan e-posta adresleri
+
+        Bu iki liste sonradan ``merge_extracted_artifacts`` ile metadata
+        blob'una akıtılır; LLM'e giden gövde sadece "anlamlı metin"
+        olur, URL/e-posta ise filtreleme alanlarında kalır.
+        """
+        source_kind = (
+            "obs"
+            if source_type_for_url(fetch_result.final_url) == "obs"
+            else "www"
         )
+        document = clean_html_to_document(
+            fetch_result.html,
+            source_kind=source_kind,
+            max_chars=self.config.max_content_chars,
+        )
+        text = document.text
+        title = document.title
+        section = document.heading
+        urls: list[str] = list(document.urls)
+        emails: list[str] = list(document.emails)
+
         plain = (fetch_result.rendered_plain_text or "").strip()
         if plain:
+            plain_cleaned = clean_plain_text(plain, source_kind=source_kind)
+            urls.extend(u for u in plain_cleaned.urls if u not in urls)
+            emails.extend(e for e in plain_cleaned.emails if e not in emails)
             base = text.strip()
-            merged = f"{base}\n\n---\n\n{plain}".strip() if base else plain
+            tail = plain_cleaned.text.strip()
+            merged = f"{base}\n\n---\n\n{tail}".strip() if base and tail else (base or tail)
             if len(merged) > self.config.max_content_chars:
                 merged = merged[: self.config.max_content_chars]
             text = merged
@@ -61,7 +95,7 @@ class ResponsibleCrawler:
             pt = fetch_result.playwright_page_title.strip()
             if pt and (not (title or "").strip() or len(pt) > len((title or "").strip())):
                 title = pt[:512]
-        return text, title, section
+        return text, title, section, urls, emails
 
     def crawl(self) -> CrawlStats:
         for seed in self.config.seed_urls:
@@ -123,7 +157,7 @@ class ResponsibleCrawler:
 
             html = fetch_result.html
             source_type = source_type_for_url(fetch_result.final_url)
-            text, title, section = self._text_from_fetch(fetch_result)
+            text, title, section, body_urls, body_emails = self._text_from_fetch(fetch_result)
             # Playwright başarısız olduysa veya bayrak kapalıyken ince gövde: bir kez Playwright dene
             if (
                 source_type == "obs"
@@ -138,7 +172,9 @@ class ResponsibleCrawler:
                         obs_max_action_clicks=self.config.obs_max_action_clicks,
                     )
                     html = fetch_result.html
-                    text, title, section = self._text_from_fetch(fetch_result)
+                    text, title, section, body_urls, body_emails = self._text_from_fetch(
+                        fetch_result
+                    )
                     logger.info("INFO url=%s used=playwright_obs_thin_retry", current_url)
                 except Exception as exc:
                     logger.warning("WARN playwright_fallback_failed url=%s error=%s", current_url, exc)
@@ -166,6 +202,10 @@ class ResponsibleCrawler:
                 continue
 
             norm_url = normalize_url(fetch_result.final_url)
+            page_metadata = enrich_from_url(norm_url)
+            page_metadata = merge_extracted_artifacts(
+                page_metadata, urls=body_urls, emails=body_emails
+            )
             result = upsert_page(
                 url=norm_url,
                 url_variant="",
@@ -174,6 +214,7 @@ class ResponsibleCrawler:
                 source_type=source_type,
                 content=text,
                 content_hash=content_hash(text),
+                metadata=page_metadata,
             )
             self.stats.fetched += 1
             if result.action == "created":
@@ -188,19 +229,31 @@ class ResponsibleCrawler:
             for cap in fetch_result.obs_captures or []:
                 if self.stats.fetched >= self.config.max_pages:
                     break
-                cch = content_hash(cap.content)
+                # Capture content is plain text (already extracted from
+                # the postback target's panel) so we run only the
+                # plain-text cleaner over it. URL / e-mail extraction
+                # still feeds the metadata blob.
+                cap_cleaned = clean_plain_text(cap.content, source_kind="obs")
+                cap_text = cap_cleaned.text or cap.content
+                cch = content_hash(cap_text)
                 if cch == parent_ch:
                     continue
-                if len(cap.content.strip()) < 40:
+                if len(cap_text.strip()) < 40:
                     continue
+                cap_url = normalize_url(cap.canonical_url)
+                cap_metadata = enrich_from_url(cap_url)
+                cap_metadata = merge_extracted_artifacts(
+                    cap_metadata, urls=cap_cleaned.urls, emails=cap_cleaned.emails
+                )
                 r2 = upsert_page(
-                    url=normalize_url(cap.canonical_url),
+                    url=cap_url,
                     url_variant=cap.url_variant[:128],
                     title=cap.title[:512],
                     section=cap.section[:256],
                     source_type=source_type,
-                    content=cap.content,
+                    content=cap_text,
                     content_hash=cch,
+                    metadata=cap_metadata,
                 )
                 self.stats.fetched += 1
                 if r2.action == "created":
