@@ -7,8 +7,20 @@ from typing import List
 
 import numpy as np
 
-# Must match RAGConfig.embedding_model_name and create_embeddings / ChunkEmbedding default.
-EXPECTED_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# Single source of truth for the embedding model used across the project.
+#
+# ``paraphrase-multilingual-MiniLM-L12-v2`` is preferred over
+# ``all-MiniLM-L6-v2`` because Acıbadem University content is primarily
+# Turkish — the multilingual checkpoint understands Turkish morphology and
+# inflection (öğrenci / öğrencinin / öğrenciye), Turkish-specific terms
+# (Bologna, ders kataloğu, fakülte), and cross-lingual queries (TR question
+# vs EN syllabus text in OBS) far better than the English-only L6 model.
+# Both checkpoints emit 384-dimensional vectors so the DB schema does not
+# need to change, but the *semantic* space is completely different — every
+# stored vector MUST be regenerated when this constant moves. The
+# ``rebuild_embeddings`` / ``create_embeddings --force`` commands enforce
+# that contract.
+EXPECTED_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
 @dataclass

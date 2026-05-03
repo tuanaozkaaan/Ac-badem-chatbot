@@ -9,6 +9,32 @@ from chatbot.ingestion.crawler import ResponsibleCrawler
 from chatbot.ingestion.url_policy import normalize_url
 
 
+# High-value seeds that satisfy the project specification:
+#   - General university pages (faculties, campus life, scholarships, fees)
+#   - Mandatory: announcements ("/duyurular") and contact ("/iletisim")
+#   - OBS Bologna entry point
+# Link discovery will expand from here; explicit seeds make the crawl
+# deterministic when ``--max-pages`` is small (e.g. CI smoke runs).
+DEFAULT_SEED_URLS: tuple[str, ...] = (
+    "https://www.acibadem.edu.tr/",
+    "https://www.acibadem.edu.tr/akademik/",
+    "https://www.acibadem.edu.tr/akademik/fakulteler/",
+    "https://www.acibadem.edu.tr/akademik/yuksekokullar/",
+    "https://www.acibadem.edu.tr/akademik/enstituler/",
+    "https://www.acibadem.edu.tr/kayit/",
+    "https://www.acibadem.edu.tr/burslar/",
+    "https://www.acibadem.edu.tr/ucretler/",
+    "https://www.acibadem.edu.tr/yasam/",
+    "https://www.acibadem.edu.tr/uluslararasi/",
+    "https://www.acibadem.edu.tr/akademik-takvim/",
+    # Spec-mandatory: must be in the corpus even if noisy.
+    "https://www.acibadem.edu.tr/iletisim/",
+    "https://www.acibadem.edu.tr/duyurular/",
+    # OBS Bologna public entry; deeper pilot crawl is configured in step 2.
+    "https://obs.acibadem.edu.tr/",
+)
+
+
 class Command(BaseCommand):
     help = "Crawl Acibadem public pages responsibly and store cleaned raw pages in PostgreSQL."
 
@@ -17,7 +43,10 @@ class Command(BaseCommand):
             "--seed-url",
             action="append",
             default=[],
-            help="Seed URL to crawl (can be provided multiple times).",
+            help=(
+                "Seed URL to crawl (can be provided multiple times). "
+                "When omitted, a curated list of high-value Acibadem pages is used."
+            ),
         )
         parser.add_argument("--max-pages", type=int, default=200)
         parser.add_argument("--min-delay", type=float, default=1.0)
@@ -34,10 +63,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self._setup_logging(options["log_level"])
-        seed_urls = options["seed_url"] or [
-            "https://www.acibadem.edu.tr",
-            "https://obs.acibadem.edu.tr",
-        ]
+        seed_urls = options["seed_url"] or list(DEFAULT_SEED_URLS)
         config = CrawlConfig(
             seed_urls=[normalize_url(url) for url in seed_urls],
             max_pages=options["max_pages"],

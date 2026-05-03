@@ -1,0 +1,95 @@
+Mühendislik ve Doğa Bilimleri Fakültesi / Bilgisayar Mühendisliği (İngilizce) - Dersler  	Yıl
+2025 (2025-2026 Bilgisayar Mühendisliği (İngilizce) (TYYÇ))
+		1.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	CHE 101	Genel Kimya	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 101	Programlamaya Giriş	2+2+0	Zorunlu	6		Yüz Yüze
+	ENG 105	Akademik Amaçlar için İngilizce I	2+2+0	Zorunlu	5		Yüz Yüze
+	MAT 111	Kalkülüs I	3+2+0	Zorunlu	6		Yüz Yüze
+	PHY 101	Fizik I	3+2+0	Zorunlu	6		Yüz Yüze
+	TUR 101	Türk Dili I	2+0+0	Zorunlu	2		Yüz Yüze
+				Toplam AKTS	31		
+							
+		2.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	BME 102	Mühendisler için Biyolojik Bilimler	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 102	Programlama Pratiği	2+2+0	Zorunlu	6		Yüz Yüze
+	ENG 106	Akademik Amaçlar için İngilizce II	2+2+0	Zorunlu	5		Yüz Yüze
+	MAT 112	Kalkülüs II	3+2+0	Zorunlu	6		Yüz Yüze
+	PHY 102	Fizik II	3+2+0	Zorunlu	6		Yüz Yüze
+	TUR 102	Türk Dili II	2+0+0	Zorunlu	2		Yüz Yüze
+				Toplam AKTS	31		
+							
+		3.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	BME 105	Bilimde Beşeri Yaklaşımlar	1+0+0	Zorunlu	1		Yüz Yüze
+	BME 207	Mühendisler için Ekonomi	3+0+0	Zorunlu	5		Yüz Yüze
+	CSE 201	Algoritmalar I	3+0+0	Zorunlu	6		Yüz Yüze
+	MAT 211	Lineer Cebir	3+2+0	Zorunlu	6		Yüz Yüze
+	MAT 241	Ayrık Matematik	3+0+0	Zorunlu	6		Yüz Yüze
+
+	ACU 2001	Seçmeli Ders	2+0+0	Seçmeli	3	1	Yüz Yüze
+				Toplam AKTS	27		
+							
+		4.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	BME 210	Mühendislik Etiği	3+0+0	Zorunlu	4		Yüz Yüze
+	BME 218	Olasılık ve Biyoistatistik	3+2+0	Zorunlu	5		Yüz Yüze
+	CSE 200	Zorunlu Yaz Stajı	0+160+0	Zorunlu	5		Yüz Yüze
+	CSE 202	Algoritmalar II	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 220	Web Programlama	3+0+0	Zorunlu	6		Yüz Yüze
+	MAT 222	Diferansiyel Denklemler	3+2+0	Zorunlu	6		Yüz Yüze
+
+	ACU 2002	Seçmeli Ders	2+0+0	Seçmeli	3	1	Yüz Yüze
+				Toplam AKTS	35		
+							
+		5.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	ATA 101	Atatürk İlkeleri ve İnkılap Tarihi I	2+0+0	Zorunlu	2		Uzaktan
+	CSE 301	Bilgisayar Mimarisi	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 311	Yazılım	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 321	Veri Sistemleri	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 331	Keşifsel Veri Analizi	3+0+0	Zorunlu	6		Yüz Yüze
+
+	ACU 3001	Seçmeli Ders	2+0+0	Seçmeli	3	1	Yüz Yüze
+				Toplam AKTS	29		
+							
+		6.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	ATA 102	Atatürk İlkeleri ve İnkılap Tarihi II	2+0+0	Zorunlu	2		Uzaktan
+	BME 320	Proje Yönetimi	3+0+0	Zorunlu	3		Yüz Yüze
+	CSE 300	Zorunlu Yaz Stajı	0+160+0	Zorunlu	5		Yüz Yüze
+	CSE 302	İşletim Sistemleri	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 312	Bilgisayar Ağları ve Sosyal Ağlar	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 322	Bulut Bilişim	3+0+0	Zorunlu	6		Yüz Yüze
+	CSE 332	Veri Bilimi ve Yapay Zeka	3+0+0	Zorunlu	6		Yüz Yüze
+				Toplam AKTS	34		
+							
+		7.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	CSE 403	Bitirme Tasarım Projesi I	0+4+0	Zorunlu	5		Yüz Yüze
+
+	ACU 4001	Seçmeli Ders	2+0+0	Seçmeli	6	2	Yüz Yüze
+
+	ADS 4001	Genel Seçmeli	3+0+0	Seçmeli	5	1	Yüz Yüze
+
+	CSE 4001	Teknik Seçmeli	3+0+0	Seçmeli	14	2	Yüz Yüze
+				Toplam AKTS	30		
+							
+		8.Yarıyıl Ders Planı					
+	Ders Kodu	Ders Adı	T+U+L	Zorunlu/Seçmeli	AKTS	Grup Ders Adedi	Öğretim Şekli
+	CSE 404	Bitirme Tasarım Projesi II	0+4+0	Zorunlu	5		Yüz Yüze
+
+	ACU 4002	Seçmeli Ders	2+0+0	Seçmeli	3	1	Yüz Yüze
+
+	ADS 4002	Genel Seçmeli	3+0+0	Seçmeli	5	1	Yüz Yüze
+
+	CSE 4002	Teknik Seçmeli	3+0+0	Seçmeli	21	3	Yüz Yüze
+				Toplam AKTS	34		
+							
+							
+
+
+
+
+https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=tr&curSunit=6246

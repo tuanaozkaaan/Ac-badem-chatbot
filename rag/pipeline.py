@@ -2,23 +2,41 @@ from __future__ import annotations
 
 """
 RAG flow: retrieval here; LLM calls go through model.local_llm.LocalLLM.
-Ollama URL is OLLAMA_BASE_URL (e.g. http://ollama:11434 in Docker — Compose service name `ollama`, not the container name).
+Ollama URL is OLLAMA_BASE_URL (e.g. http://ollama:11434 in Docker —
+Compose service name `ollama`, not the container name).
+
+Step 4.3 (this revision)
+------------------------
+The previous version of this module hosted a constellation of intent-
+specific heuristics — engineering-only keyword boosts, an
+"Eczacılık fakülte sayma" exclusion list, a department-alias merge,
+a hand-written engineering-departments local-data short-circuit, and
+post-processing that surgically removed duplicate "MBG / Moleküler
+Biyoloji" lines. All of those decisions were specific to a single
+faculty in the pilot and made adding the next program a copy-paste
+chore.
+
+They are now centralized in :mod:`chatbot.services.query_parser`, which
+returns a :class:`QueryFilters` instance the retriever uses to focus on
+the right metadata namespace. The pipeline below is a thin shell:
+embed query → cosine top-k from the in-memory FAISS store →
+parser-aware metadata sanity filter → LLM. New intents and new
+departments are now one regex line in the parser, not new branches in
+this file.
 """
-from dataclasses import dataclass
 import json
-import re
-from pathlib import Path
+from dataclasses import dataclass
 from time import perf_counter
 from typing import List, Optional
 
 import numpy as np
+
 from model.local_llm import LocalLLM
 from rag.document_loader import (
     EXPECTED_EMBEDDING_MODEL,
     load_chunks_from_db,
     load_text_documents,
 )
-from rag.text_splitter import split_into_chunks
 from rag.embedding_store import (
     VectorStore,
     build_faiss_index,
@@ -26,51 +44,20 @@ from rag.embedding_store import (
     embed_query,
     search_top_k,
 )
-
-
-EXCLUDED_CONTEXT_TERMS: tuple[str, ...] = ("seminar", "seminer")
-ENGINEERING_CONTEXT_EXCLUDE_TERMS: tuple[str, ...] = ("eczacilik", "eczacılık", "seminer", "seminar")
-ENGINEERING_BOOST_TERMS: tuple[str, ...] = (
-    "muhendislik",
-    "mühendislik",
-    "bilgisayar muhendisligi",
-    "bilgisayar mühendisliği",
-    "biyomedikal muhendisligi",
-    "biyomedikal mühendisliği",
-    "mbg",
-    "molekuler biyoloji",
-    "moleküler biyoloji",
-)
-DEPARTMENT_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
-    "Molekuler Biyoloji ve Genetik (MBG)": (
-        "molekuler biyoloji ve genetik",
-        "moleküler biyoloji ve genetik",
-        "molekuler biyoloji",
-        "moleküler biyoloji",
-        "mbg",
-    ),
-    "Bilgisayar Muhendisligi": (
-        "bilgisayar muhendisligi",
-        "bilgisayar mühendisliği",
-    ),
-    "Biyomedikal Muhendisligi": (
-        "biyomedikal muhendisligi",
-        "biyomedikal mühendisliği",
-    ),
-}
-ENGINEERING_FACULTY_LOCAL_DATA_FILE = "engineering_natural_sciences_departments.txt"
+from rag.text_splitter import split_into_chunks
 
 
 @dataclass
 class RAGConfig:
     data_dir: str = "data"
     prefer_db_chunks: bool = True
-    # Must match create_embeddings and ChunkEmbedding defaults (EXPECTED_EMBEDDING_MODEL).
+    # Must match create_embeddings and ChunkEmbedding defaults
+    # (EXPECTED_EMBEDDING_MODEL).
     embedding_model_name: str = EXPECTED_EMBEDDING_MODEL
     top_k: int = 7
-    # IndexFlatL2 / embed_query: squared L2 on normalized vectors. Larger = worse match.
-    # Reject when best match is worse than this (strict inequality: > threshold => no context).
-    # Slightly relaxed vs. 2.0 so marginal FAISS / L2 hits still yield context (CLI / non-Django path).
+    # IndexFlatL2 / embed_query: squared L2 on normalized vectors.
+    # Larger = worse match. Reject when best match is worse than this
+    # (strict inequality: > threshold => no context).
     max_distance_threshold: float = 2.35
 
 
@@ -80,12 +67,16 @@ class RAGSystem:
         self.config = config or RAGConfig()
         self.store: VectorStore | None = None
 
+    # ------------------------------------------------------------------
+    # Knowledge base construction
+    # ------------------------------------------------------------------
     def build_knowledge_base(self) -> None:
         total_start = perf_counter()
         if self.config.embedding_model_name != EXPECTED_EMBEDDING_MODEL:
             print(
-                f"DEBUG: build_knowledge_base: WARNING: embedding_model_name={self.config.embedding_model_name!r} "
-                f"!= stored vectors' model {EXPECTED_EMBEDDING_MODEL!r}"
+                "DEBUG: build_knowledge_base: WARNING: embedding_model_name="
+                f"{self.config.embedding_model_name!r} != stored vectors' "
+                f"model {EXPECTED_EMBEDDING_MODEL!r}"
             )
 
         chunks: List[str] = []
@@ -99,14 +90,16 @@ class RAGSystem:
                 per_row = [row.vector for row in loaded]
                 print(
                     f"DEBUG: build_knowledge_base: DB path — {len(chunks)} chunk texts, "
-                    f"vectors present per row: {per_row is not None and all(v is not None for v in per_row)}"
+                    f"vectors present per row: "
+                    f"{per_row is not None and all(v is not None for v in per_row)}"
                 )
             else:
                 print("DEBUG: build_knowledge_base: DB load returned 0 rows, will try files.")
 
         if not chunks:
             print(
-                f"DEBUG: build_knowledge_base: loading from data_dir={self.config.data_dir!r} (txt files)"
+                "DEBUG: build_knowledge_base: loading from data_dir="
+                f"{self.config.data_dir!r} (txt files)"
             )
             docs = load_text_documents(self.config.data_dir)
             chunks = split_into_chunks(docs)
@@ -161,23 +154,31 @@ class RAGSystem:
             )
         )
 
+    # ------------------------------------------------------------------
+    # Question answering
+    # ------------------------------------------------------------------
     def answer(self, question: str) -> str:
+        # Imported lazily so a CLI that only calls ``build_knowledge_base``
+        # does not have to load the parser regex tables.
+        from chatbot.services.query_parser import QueryFilters, parse_query
+
         total_start = perf_counter()
         if not self.store:
             raise RuntimeError("Knowledge base not built. Call build_knowledge_base() first.")
 
-        if self._is_engineering_faculty_departments_question(question):
-            local_departments = self._load_engineering_departments_from_local_data()
-            if local_departments:
-                return self._format_engineering_departments_answer(local_departments)
+        filters = parse_query(question)
 
         embedding_start = perf_counter()
         query_vector = embed_query(question, self.store.embedding_model_name)
         embedding_ms = (perf_counter() - embedding_start) * 1000
 
+        # Pull a wider candidate pool than ``top_k`` so that a parser-
+        # driven post-filter can still produce ``top_k`` survivors.
         retrieval_start = perf_counter()
-        retrieved = search_top_k(self.store, query_vector, k=self.config.top_k)
-        retrieved = self._apply_engineering_keyword_boost(question, retrieved)
+        pool_k = max(self.config.top_k * 3, self.config.top_k + 6)
+        retrieved = search_top_k(self.store, query_vector, k=pool_k)
+        retrieved = self._apply_parser_filter(retrieved, filters)
+        retrieved = retrieved[: self.config.top_k]
         retrieval_ms = (perf_counter() - retrieval_start) * 1000
 
         if not retrieved:
@@ -185,132 +186,64 @@ class RAGSystem:
                 "DEBUG: answer: search_top_k empty (index empty?); "
                 f"index ntotal={getattr(self.store.index, 'ntotal', 'n/a')}"
             )
-            total_ms = (perf_counter() - total_start) * 1000
-            print(
-                json.dumps(
-                    {
-                        "event": "latency",
-                        "stage": "answer",
-                        "embedding_ms": round(embedding_ms, 1),
-                        "retrieval_ms": round(retrieval_ms, 1),
-                        "generation_ms": 0.0,
-                        "total_ms": round(total_ms, 1),
-                        "retrieved": 0,
-                        "kept": 0,
-                        "reason": "empty_retrieval",
-                    },
-                    ensure_ascii=True,
-                )
+            self._log_latency(
+                stage="answer",
+                embedding_ms=embedding_ms,
+                retrieval_ms=retrieval_ms,
+                generation_ms=0.0,
+                total_start=total_start,
+                retrieved=0,
+                kept=0,
+                reason="empty_retrieval",
             )
             return "The requested information is not available in the provided context."
 
-        # FAISS returns squared L2 for IndexFlatL2; compare in the same space as max_distance_threshold.
+        # FAISS returns squared L2 for IndexFlatL2; compare in the same
+        # space as ``max_distance_threshold``.
         best_distance = retrieved[0][1]
         print(
             f"DEBUG: answer: top_k={self.config.top_k}, best_l2_sq={best_distance:.4f}, "
-            f"threshold={self.config.max_distance_threshold}, model={self.store.embedding_model_name!r}"
+            f"threshold={self.config.max_distance_threshold}, "
+            f"model={self.store.embedding_model_name!r}, "
+            f"parser_filters={filters.matched_terms or 'none'}"
         )
         if best_distance > self.config.max_distance_threshold:
             print(
                 "DEBUG: answer: best squared L2 over threshold; returning not-available message"
             )
-            total_ms = (perf_counter() - total_start) * 1000
-            print(
-                json.dumps(
-                    {
-                        "event": "latency",
-                        "stage": "answer",
-                        "embedding_ms": round(embedding_ms, 1),
-                        "retrieval_ms": round(retrieval_ms, 1),
-                        "generation_ms": 0.0,
-                        "total_ms": round(total_ms, 1),
-                        "retrieved": len(retrieved),
-                        "kept": 0,
-                        "reason": "distance_threshold",
-                    },
-                    ensure_ascii=True,
-                )
+            self._log_latency(
+                stage="answer",
+                embedding_ms=embedding_ms,
+                retrieval_ms=retrieval_ms,
+                generation_ms=0.0,
+                total_start=total_start,
+                retrieved=len(retrieved),
+                kept=0,
+                reason="distance_threshold",
             )
             return "The requested information is not available in the provided context."
 
-        filtered_retrieved = [
-            (chunk, distance)
-            for chunk, distance in retrieved
-            if not self._is_excluded_chunk(chunk)
-            and not self._is_engineering_excluded_chunk(question, chunk)
-        ]
-        if not filtered_retrieved:
-            print("DEBUG: answer: all retrieved chunks excluded by seminar filter.")
-            total_ms = (perf_counter() - total_start) * 1000
-            print(
-                json.dumps(
-                    {
-                        "event": "latency",
-                        "stage": "answer",
-                        "embedding_ms": round(embedding_ms, 1),
-                        "retrieval_ms": round(retrieval_ms, 1),
-                        "generation_ms": 0.0,
-                        "total_ms": round(total_ms, 1),
-                        "retrieved": len(retrieved),
-                        "kept": 0,
-                        "reason": "excluded_by_seminar_filter",
-                    },
-                    ensure_ascii=True,
-                )
-            )
-            return "The requested information is not available in the provided context."
-
-        context_blocks: List[str] = [chunk for chunk, _ in filtered_retrieved]
-        context_blocks = self._deduplicate_context_blocks(context_blocks)
+        context_blocks = self._deduplicate_context_blocks([chunk for chunk, _ in retrieved])
         context = "\n\n".join(context_blocks)
 
-        prompt = (
-            "You are a precise question-answering assistant.\n"
-            "Use only the context. Do not invent facts.\n"
-            "If the context includes a section list, return only those sections as bullet points.\n"
-            "When a user asks which departments a faculty contains (\"hangi bölümleri içerir\"), "
-            "answer with a concise bullet list of department names only.\n"
-            "For department-list answers, end with a short note that the information comes from local data.\n"
-            "Ignore announcements and seminars.\n"
-            "When listing departments under the Faculty of Engineering and Natural Sciences, "
-            "consider ONLY these: Bilgisayar Muhendisligi, Biyomedikal Muhendisligi, "
-            "Molekuler Biyoloji ve Genetik (MBG).\n"
-            "Never list seminar/event items or names from other faculties as if they were departments "
-            "of this faculty.\n"
-            "Do not repeat the same department with aliases (for example MBG and Molekuler Biyoloji); "
-            "merge them into one canonical item.\n"
-            "Do not treat Eczacilik Fakultesi as a department.\n\n"
-            f"Context:\n{context}\n\n"
-            f"Question: {question}\n"
-            "Answer:"
-        )
+        prompt = self._build_prompt(question=question, context=context, filters=filters)
 
         print("DEBUG: answer: --- context (before Ollama) ---")
         print(context)
         print("DEBUG: answer: --- end context ---")
-        print("DEBUG: answer: --- full prompt (before Ollama) ---")
-        print(prompt)
-        print("DEBUG: answer: --- end prompt ---")
 
         generation_start = perf_counter()
         response = self.llm.generate(prompt=prompt)
         generation_ms = (perf_counter() - generation_start) * 1000
-        total_ms = (perf_counter() - total_start) * 1000
-        print(
-            json.dumps(
-                {
-                    "event": "latency",
-                    "stage": "answer",
-                    "embedding_ms": round(embedding_ms, 1),
-                    "retrieval_ms": round(retrieval_ms, 1),
-                    "generation_ms": round(generation_ms, 1),
-                    "total_ms": round(total_ms, 1),
-                    "retrieved": len(retrieved),
-                    "kept": len(filtered_retrieved),
-                    "reason": "ok",
-                },
-                ensure_ascii=True,
-            )
+        self._log_latency(
+            stage="answer",
+            embedding_ms=embedding_ms,
+            retrieval_ms=retrieval_ms,
+            generation_ms=generation_ms,
+            total_start=total_start,
+            retrieved=len(retrieved),
+            kept=len(context_blocks),
+            reason="ok",
         )
         if not response:
             print(
@@ -319,123 +252,149 @@ class RAGSystem:
             )
             return "The requested information is not available in the provided context."
 
-        return self._postprocess_response(question, response)
+        return response.strip()
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
     @staticmethod
-    def _is_excluded_chunk(chunk: str) -> bool:
-        lower_chunk = chunk.lower()
-        return any(term in lower_chunk for term in EXCLUDED_CONTEXT_TERMS)
-
-    @staticmethod
-    def _is_engineering_departments_question(question: str) -> bool:
-        normalized = question.lower()
-        has_engineering = "muhendislik" in normalized or "mühendislik" in normalized
-        has_department = (
-            "bolum" in normalized
-            or "bölüm" in normalized
-            or "fakulte" in normalized
-            or "fakülte" in normalized
-        )
-        return has_engineering and has_department
-
-    @staticmethod
-    def _is_engineering_faculty_departments_question(question: str) -> bool:
-        if not RAGSystem._is_engineering_departments_question(question):
-            return False
-        normalized = question.lower()
-        return ("doğa bilimleri" in normalized) or ("doga bilimleri" in normalized)
-
-    def _load_engineering_departments_from_local_data(self) -> List[str]:
-        data_file = Path(self.config.data_dir) / ENGINEERING_FACULTY_LOCAL_DATA_FILE
-        if not data_file.exists():
-            return []
-
-        departments: List[str] = []
-        for raw_line in data_file.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if line.startswith("- "):
-                item = line[2:].strip()
-                if item:
-                    departments.append(item)
-
-        # Keep unique order in case of accidental duplicate lines.
-        unique_departments: List[str] = []
-        seen: set[str] = set()
-        for department in departments:
-            key = department.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_departments.append(department)
-        return unique_departments
-
-    @staticmethod
-    def _format_engineering_departments_answer(departments: List[str]) -> str:
-        lines = ["Mühendislik ve Doğa Bilimleri Fakültesi şu bölümleri içerir:"]
-        lines.extend(f"- {department}" for department in departments)
-        lines.append("")
-        lines.append("Not: Bu bilgi yerel veri dosyalarından derlenmiştir.")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _is_engineering_excluded_chunk(question: str, chunk: str) -> bool:
-        if not RAGSystem._is_engineering_departments_question(question):
-            return False
-        lower_chunk = chunk.lower()
-        return any(term in lower_chunk for term in ENGINEERING_CONTEXT_EXCLUDE_TERMS)
-
-    @staticmethod
-    def _apply_engineering_keyword_boost(
-        question: str, retrieved: List[tuple[str, float]]
+    def _apply_parser_filter(
+        retrieved: List[tuple[str, float]],
+        filters,
     ) -> List[tuple[str, float]]:
-        if not RAGSystem._is_engineering_departments_question(question):
+        """Down-rank chunks whose text body contradicts the parsed filters.
+
+        The in-memory FAISS store does not carry ``PageChunk.metadata``
+        (DB layer does), so we run a lightweight text-substring check
+        here as a defensive layer. The contract is:
+
+          * A chunk that obviously names the WRONG department for a
+            question whose parser pinned a specific one is dropped.
+          * Otherwise we leave the cosine ordering untouched — this
+            method is conservative: if it cannot prove a chunk is
+            wrong, it lets it through.
+        """
+        if filters is None or filters.is_empty():
             return retrieved
-        boosted: List[tuple[float, str, float]] = []
+        if not filters.department:
+            return retrieved
+
+        wanted = filters.department.lower()
+        # Bare fragment: "Bilgisayar Mühendisliği" → "bilgisayar mühendisli"
+        # so we forgive trailing inflection ("...ği'nin", "...ğine").
+        wanted_root = wanted.rstrip("i").rstrip("ı").rstrip(" ")
+
+        kept: list[tuple[str, float]] = []
         for chunk, distance in retrieved:
-            lower_chunk = chunk.lower()
-            bonus = sum(1 for term in ENGINEERING_BOOST_TERMS if term in lower_chunk)
-            adjusted_distance = distance - (0.08 * bonus)
-            boosted.append((adjusted_distance, chunk, distance))
-        boosted.sort(key=lambda item: item[0])
-        return [(chunk, original_distance) for _, chunk, original_distance in boosted]
+            body = (chunk or "").lower()
+            # If the wanted department's root appears, keep.
+            if wanted_root in body:
+                kept.append((chunk, distance))
+                continue
+            # If no other engineering / medical department names appear
+            # either, the chunk is generic and remains a candidate.
+            if not RAGSystem._mentions_other_department(body, wanted_root):
+                kept.append((chunk, distance))
+        return kept or retrieved
+
+    @staticmethod
+    def _mentions_other_department(body: str, wanted_root: str) -> bool:
+        # Cheap heuristic: looking for "X Mühendisliği" substrings that
+        # are not the wanted root. Keeps the list short on purpose so
+        # adding a new department in the parser does not also force an
+        # edit here.
+        candidates = (
+            "biyomedikal mühendisli",
+            "endüstri mühendisli",
+            "elektrik-elektronik mühendisli",
+            "moleküler biyoloji",
+            "tıp fakülte",
+            "diş hekimli",
+            "eczacılık",
+            "hemşirelik",
+            "fizyoterapi",
+        )
+        for cand in candidates:
+            if cand == wanted_root:
+                continue
+            if cand in body:
+                return True
+        return False
 
     @staticmethod
     def _deduplicate_context_blocks(context_blocks: List[str]) -> List[str]:
-        deduplicated: List[str] = []
-        seen_fingerprints: set[str] = set()
+        """Plain whitespace-normalised dedup, no alias merging.
+
+        The previous implementation tried to canonicalise "MBG" vs
+        "Moleküler Biyoloji ve Genetik" before deduping; the parser now
+        owns alias handling, and the LLM does not need us to rewrite
+        chunks for it.
+        """
+        deduplicated: list[str] = []
+        seen: set[str] = set()
         for block in context_blocks:
-            normalized_block = block
-            for canonical_name, aliases in DEPARTMENT_ALIAS_GROUPS.items():
-                if any(alias in normalized_block.lower() for alias in aliases):
-                    normalized_block = RAGSystem._replace_aliases(
-                        normalized_block, aliases, canonical_name
-                    )
-            fingerprint = re.sub(r"\s+", " ", normalized_block).strip().lower()
-            if not fingerprint or fingerprint in seen_fingerprints:
+            fingerprint = " ".join((block or "").split()).strip().lower()
+            if not fingerprint or fingerprint in seen:
                 continue
-            seen_fingerprints.add(fingerprint)
-            deduplicated.append(normalized_block)
+            seen.add(fingerprint)
+            deduplicated.append(block)
         return deduplicated
 
     @staticmethod
-    def _replace_aliases(text: str, aliases: tuple[str, ...], canonical_name: str) -> str:
-        updated_text = text
-        for alias in aliases:
-            pattern = re.compile(re.escape(alias), flags=re.IGNORECASE)
-            updated_text = pattern.sub(canonical_name, updated_text)
-        return updated_text
+    def _build_prompt(*, question: str, context: str, filters) -> str:
+        focus_lines: list[str] = []
+        if filters and not filters.is_empty():
+            if filters.department:
+                focus_lines.append(f"Hedeflenen bölüm: {filters.department}")
+            if filters.faculty:
+                focus_lines.append(f"Hedeflenen fakülte: {filters.faculty}")
+            if filters.course_code:
+                focus_lines.append(f"Ders kodu: {filters.course_code}")
+            if filters.semester is not None:
+                focus_lines.append(f"Yarıyıl: {filters.semester}")
+            if filters.content_types:
+                focus_lines.append("İçerik türü: " + ", ".join(filters.content_types))
+        focus_block = ("\n".join(focus_lines) + "\n\n") if focus_lines else ""
+
+        return (
+            "You are a precise question-answering assistant.\n"
+            "Use only the context. Do not invent facts.\n"
+            "If the context includes a section list, return only those sections "
+            "as bullet points.\n"
+            "Ignore announcements and seminars unless the question is explicitly "
+            "about them.\n\n"
+            f"{focus_block}"
+            f"Context:\n{context}\n\n"
+            f"Question: {question}\n"
+            "Answer:"
+        )
 
     @staticmethod
-    def _postprocess_response(question: str, response: str) -> str:
-        if not RAGSystem._is_engineering_departments_question(question):
-            return response
-        lower = response.lower()
-        has_mbg = "mbg" in lower
-        has_molekuler = "moleküler biyoloji" in lower or "molekuler biyoloji" in lower
-        if has_mbg and has_molekuler:
-            response = re.sub(
-                r"(?im)^\s*[-*]?\s*Molek[üu]ler Biyoloji(?: ve Genetik)?(?:\s*\(MBG\))?\s*$\n?",
-                "",
-                response,
+    def _log_latency(
+        *,
+        stage: str,
+        embedding_ms: float,
+        retrieval_ms: float,
+        generation_ms: float,
+        total_start: float,
+        retrieved: int,
+        kept: int,
+        reason: str,
+    ) -> None:
+        total_ms = (perf_counter() - total_start) * 1000
+        print(
+            json.dumps(
+                {
+                    "event": "latency",
+                    "stage": stage,
+                    "embedding_ms": round(embedding_ms, 1),
+                    "retrieval_ms": round(retrieval_ms, 1),
+                    "generation_ms": round(generation_ms, 1),
+                    "total_ms": round(total_ms, 1),
+                    "retrieved": retrieved,
+                    "kept": kept,
+                    "reason": reason,
+                },
+                ensure_ascii=True,
             )
-        return response.strip()
+        )

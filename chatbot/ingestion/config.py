@@ -15,6 +15,9 @@ class CrawlConfig:
     # OBS: Playwright ile tıklanacak yüksek değerli aksiyon sayısı üst sınırı (0 = keşif kapalı).
     obs_max_action_clicks: int = 20
     max_content_chars: int = 200_000
+    # Keywords used by the priority queue to surface high-value pages first
+    # when ``--max-pages`` is small. The spec requires announcements and
+    # contact pages, so both English and Turkish slugs sit at the top.
     high_value_keywords: tuple[str, ...] = field(
         default_factory=lambda: (
             "department",
@@ -25,12 +28,23 @@ class CrawlConfig:
             "duyuru",
             "announcement",
             "contact",
+            "iletisim",
             "about",
+            "hakkinda",
             "akademik",
             "bolum",
+            "fakulte",
             "lisans",
             "onlisans",
+            "lisansustu",
             "ders",
+            "mufredat",
             "ogrenci",
+            "kayit",
+            "burs",
+            "ucret",
+            "takvim",
+            "uluslararasi",
+            "yasam",
         )
     )

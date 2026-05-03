@@ -60,3 +60,10 @@ Thumbs.db
 
 # Model weights (large files)
 *.gguf
+
+# Smoke test / calibration artifacts (script itself stays in scripts/)
+data/scraped/smoke_test_*.json
+data/scraped/bologna_pilot_smoke.json
+data/scraped/bologna_dom_*.json
+data/scraped/bologna_*.png
+logs/smoke_*.log
