@@ -60,8 +60,10 @@ services:
       dockerfile: Dockerfile
     environment:
       NODE_ENV: production
-      # Server-side proxy to Django on the Compose network (browser never calls this URL).
-      ACU_BACKEND_URL: ${ACU_BACKEND_URL:-http://web:8000}
+      # ALWAYS in-container Django (Compose service name ``web``, port 8000). Do **not**
+      # interpolate from repo ``.env`` — that file often sets ``ACU_BACKEND_URL`` to
+      # ``127.0.0.1`` for host-side ``npm run dev``, which breaks this container's proxy.
+      ACU_BACKEND_URL: "http://web:8000"
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
     depends_on:

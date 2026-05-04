@@ -1,6 +1,9 @@
 # Multi-stage production image: Next.js 14 App Router with `output: "standalone"`.
 # Build:  docker build -t acudost-frontend .
 # Run:    docker run --rm -e ACU_BACKEND_URL=http://web:8000 -p 3000:3000 acudost-frontend
+#
+# ACU_BACKEND_URL is NOT set here on purpose — it must be injected at runtime
+# (Compose sets http://web:8000). Never bake host ``127.0.0.1`` into the image.
 
 FROM node:20-alpine AS base
 WORKDIR /app
