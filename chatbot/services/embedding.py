@@ -80,7 +80,7 @@ def _embed_query_normalized(question: str, model_name: str) -> np.ndarray:
 
 
 @lru_cache(maxsize=16)
-def _embedding_matrix_pack(cache_key: tuple[str, int, int]) -> tuple[np.ndarray, tuple[dict[str, str | int], ...]]:
+def _embedding_matrix_pack(cache_key: tuple[str, int, int]) -> tuple[np.ndarray, tuple[dict[str, object], ...]]:
     """
     Tüm embedding satırlarını tek seferde matrise çevirir; cache_key (kaynak filtresi + satır sayısı + max id)
     değişene kadar @lru_cache ile bellekte tutulur — her /ask isteğinde 1947 kez JSON parse etmez.
@@ -96,7 +96,7 @@ def _embedding_matrix_pack(cache_key: tuple[str, int, int]) -> tuple[np.ndarray,
         qs = qs.filter(chunk__source_type=source_type)
 
     vectors: list[np.ndarray] = []
-    metas: list[dict[str, str | int]] = []
+    metas: list[dict[str, object]] = []
 
     for emb in qs.iterator(chunk_size=800):
         ch = emb.chunk
@@ -122,6 +122,9 @@ def _embedding_matrix_pack(cache_key: tuple[str, int, int]) -> tuple[np.ndarray,
                 "url": (ch.url or "").strip(),
                 "title": (ch.title or "").strip(),
                 "text": text,
+                # Surfaced through the API contract so the frontend can render source cards
+                # (content_type, department, course_code, ...) without re-fetching the chunk.
+                "metadata": dict(ch.metadata or {}),
             }
         )
 
@@ -213,6 +216,9 @@ def _retrieve_with_metadata_filter(
                 "url": (ch.url or "").strip(),
                 "title": (ch.title or "").strip(),
                 "text": text,
+                # Same shape as the global pass so callers can serialize either result
+                # (content_type, department, course_code, ...) uniformly.
+                "metadata": dict(ch.metadata or {}),
             }
         )
 
@@ -344,6 +350,9 @@ def _retrieve_top_chunks_by_embedding(
             "title": base_row["title"],
             "text": base_row["text"],
             "score": float(sims[int(i)]),
+            # base_row["metadata"] is the cached dict; copy so downstream mutations
+            # cannot bleed into the lru_cache-held tuple.
+            "metadata": dict(base_row.get("metadata") or {}),
         }
         out.append(row)
 

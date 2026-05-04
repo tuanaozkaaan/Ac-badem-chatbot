@@ -2,8 +2,11 @@
 
 This is the only services-layer module allowed to know that an /ask call has many
 stages (intents → retrieval → LLM → post-processing → persistence). It stays
-HTTP-agnostic: returns ``(payload_dict, status_code)`` for the HTTP adapter to
-wrap into a JsonResponse.
+HTTP-agnostic: returns ``(payload_dict, status_code, AskMeta)`` for the HTTP
+adapter to wrap into a JsonResponse. The ``payload_dict`` keeps the legacy
+``{conversation_id, answer | detail}`` shape; ``AskMeta`` is the side-channel
+the v1 view (Adım 5.1) uses to project retrieval/timing/source onto the wire
+without forcing services to depend on serializers.
 
 Allowed dependency direction (top of the DAG):
     ask_orchestrator → constants, language, intents, context_select, extractive,
@@ -21,6 +24,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass, field
 
 from chatbot.services.constants import (
     ACIBADEM_GENERAL_FOCUS_BLOCK,
@@ -59,9 +63,32 @@ from chatbot.services.llm_client import (
     translate_answer,
 )
 from chatbot.services.prompts import build_ask_prompt
-from chatbot.services.query_parser import parse_query
+from chatbot.services.query_parser import QueryFilters, parse_query
 
 logger = logging.getLogger(__name__)
+
+# answer_source values surfaced on the wire so the frontend can branch
+# (e.g. show a "no context found" badge for FALLBACK without parsing the body).
+ANSWER_SOURCE_RAG_LLM = "RAG_LLM"
+ANSWER_SOURCE_EXTRACTIVE = "EXTRACTIVE"
+ANSWER_SOURCE_FALLBACK = "FALLBACK"
+ANSWER_SOURCE_NO_INFO = "NO_INFO"
+
+
+@dataclass
+class AskMeta:
+    """Side-channel context produced by ``run_ask`` for view-layer serialization.
+
+    Kept as a dataclass (not pre-serialized JSON) so the orchestrator stays
+    HTTP-agnostic: views in :mod:`chatbot.api.v1` decide whether to expose
+    ``retrieved_chunks`` text, what the wire shape is, etc. An empty instance
+    is returned for early failures (no retrieval performed).
+    """
+
+    answer_source: str | None = None
+    retrieved_chunks: list[dict] = field(default_factory=list)
+    filters: QueryFilters = field(default_factory=QueryFilters)
+    latency_ms: dict[str, int] = field(default_factory=dict)
 
 
 def _context_from_hybrid_chunks(chunks: list[dict]) -> str:
@@ -83,7 +110,7 @@ def _context_from_hybrid_chunks(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(blocks).strip()
 
 
-def run_ask(question: str, conv) -> tuple[dict, int]:
+def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
     """Drive an /ask call from a sanitized question + resolved conversation.
 
     The HTTP adapter is expected to have:
@@ -93,7 +120,10 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
       * resolved/created the Conversation row.
 
     This function persists the user message, runs the retrieval/LLM pipeline, persists
-    the assistant reply, and returns ``(payload, http_status)``.
+    the assistant reply, and returns ``(payload, http_status, meta)``. ``meta`` is
+    always a :class:`AskMeta` instance; views decide whether/how to put it on the
+    wire (the legacy :func:`chatbot.api.v1.views.ask` ignores it; the v1
+    endpoint serializes it into the response).
     """
     from chatbot.models import Message
 
@@ -101,6 +131,18 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
     if not (conv.title or "").strip():
         conv.title = conversation_title_from_question(question)
         conv.save(update_fields=["title"])
+
+    t_total_start = time.perf_counter()
+    meta = AskMeta()
+
+    def _finalize(
+        reply: tuple[dict, int],
+        *,
+        answer_source: str | None,
+    ) -> tuple[dict, int, AskMeta]:
+        meta.answer_source = answer_source
+        meta.latency_ms["total"] = int((time.perf_counter() - t_total_start) * 1000)
+        return reply[0], reply[1], meta
 
     try:
         lang = _detect_language(question)
@@ -143,10 +185,14 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
         t_retrieve = time.perf_counter()
         filters = parse_query(question)
         chunks = _retrieve_top_chunks_by_embedding(question, k=k_ctx, filters=filters)
+        retrieve_ms = int((time.perf_counter() - t_retrieve) * 1000)
+        meta.filters = filters
+        meta.retrieved_chunks = list(chunks)
+        meta.latency_ms["retrieve"] = retrieve_ms
         context = _context_from_hybrid_chunks(chunks)
         logger.info(
             "/ask hybrid_retrieval done in %.2fs chunks=%s matched_terms=%s",
-            time.perf_counter() - t_retrieve,
+            retrieve_ms / 1000.0,
             len(chunks),
             filters.matched_terms,
         )
@@ -186,12 +232,15 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
         if not context:
             logger.info("ANSWER_SOURCE=FALLBACK")
             logger.info("EXTRACTIVE_REASON=context_weak_or_unrelated")
-            return build_assistant_reply(
-                conv,
-                _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
-                attach_followup=False,
-                is_tr=is_tr,
-                question=question,
+            return _finalize(
+                build_assistant_reply(
+                    conv,
+                    _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                    attach_followup=False,
+                    is_tr=is_tr,
+                    question=question,
+                ),
+                answer_source=ANSWER_SOURCE_FALLBACK,
             )
         if _is_extractive_question(question):
             logger.info("EXTRACTIVE_ATTEMPTED")
@@ -201,12 +250,15 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
                 logger.info("ANSWER_SOURCE=EXTRACTIVE")
                 logger.info("EXTRACTIVE_FOUND")
                 logger.info("EXTRACTIVE_REASON=%s", reason)
-                return build_assistant_reply(
-                    conv,
-                    answer_text,
-                    attach_followup=False,
-                    is_tr=is_tr,
-                    question=question,
+                return _finalize(
+                    build_assistant_reply(
+                        conv,
+                        answer_text,
+                        attach_followup=False,
+                        is_tr=is_tr,
+                        question=question,
+                    ),
+                    answer_source=ANSWER_SOURCE_EXTRACTIVE,
                 )
             logger.info("EXTRACTIVE_NOT_FOUND_CONTINUE_TO_LLM")
 
@@ -238,16 +290,21 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
         )
         t_llm = time.perf_counter()
         answer = ask_gemma(prompt)
-        logger.info("/ask ask_gemma (primary) done in %.2fs", time.perf_counter() - t_llm)
+        llm_elapsed_ms = int((time.perf_counter() - t_llm) * 1000)
+        meta.latency_ms["llm"] = meta.latency_ms.get("llm", 0) + llm_elapsed_ms
+        logger.info("/ask ask_gemma (primary) done in %.2fs", llm_elapsed_ms / 1000.0)
         if answer == OLLAMA_TIMEOUT_SENTINEL:
             logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(prompt))
             logger.info("ANSWER_SOURCE=FALLBACK")
-            return build_assistant_reply(
-                conv,
-                _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
-                attach_followup=False,
-                is_tr=is_tr,
-                question=question,
+            return _finalize(
+                build_assistant_reply(
+                    conv,
+                    _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                    attach_followup=False,
+                    is_tr=is_tr,
+                    question=question,
+                ),
+                answer_source=ANSWER_SOURCE_FALLBACK,
             )
         if (
             not (answer or "").strip()
@@ -266,16 +323,21 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
             )
             t_ref = time.perf_counter()
             answer = (ask_gemma(refill) or "").strip()
-            logger.info("/ask ask_gemma empty-refill done in %.2fs", time.perf_counter() - t_ref)
+            ref_elapsed_ms = int((time.perf_counter() - t_ref) * 1000)
+            meta.latency_ms["llm"] = meta.latency_ms.get("llm", 0) + ref_elapsed_ms
+            logger.info("/ask ask_gemma empty-refill done in %.2fs", ref_elapsed_ms / 1000.0)
             if answer == OLLAMA_TIMEOUT_SENTINEL:
                 logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(refill))
                 logger.info("ANSWER_SOURCE=FALLBACK")
-                return build_assistant_reply(
-                    conv,
-                    _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
-                    attach_followup=False,
-                    is_tr=is_tr,
-                    question=question,
+                return _finalize(
+                    build_assistant_reply(
+                        conv,
+                        _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                        attach_followup=False,
+                        is_tr=is_tr,
+                        question=question,
+                    ),
+                    answer_source=ANSWER_SOURCE_FALLBACK,
                 )
         ctx_lc = (context or "").lower()
         if campus_green_q and ctx_lc and any(
@@ -306,16 +368,23 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
                         f"Context:\n{context[:4000]}\n\nQuestion: {question}"
                     )
                 )
+                t_retry = time.perf_counter()
                 retry_answer = (ask_gemma(retry) or "").strip()
+                meta.latency_ms["llm"] = meta.latency_ms.get("llm", 0) + int(
+                    (time.perf_counter() - t_retry) * 1000
+                )
                 if retry_answer == OLLAMA_TIMEOUT_SENTINEL:
                     logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(retry))
                     logger.info("ANSWER_SOURCE=FALLBACK")
-                    return build_assistant_reply(
-                        conv,
-                        _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
-                        attach_followup=False,
-                        is_tr=is_tr,
-                        question=question,
+                    return _finalize(
+                        build_assistant_reply(
+                            conv,
+                            _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                            attach_followup=False,
+                            is_tr=is_tr,
+                            question=question,
+                        ),
+                        answer_source=ANSWER_SOURCE_FALLBACK,
                     )
                 answer = retry_answer or answer
         generic_retry_on = (os.environ.get("DJANGO_ENABLE_GENERIC_RETRY") or "0").strip().lower() in (
@@ -345,27 +414,41 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
                     f"Context:\n{context[:4200]}\n\nQuestion: {question}"
                 )
             )
+            t_gen = time.perf_counter()
             retry_gen_answer = (ask_gemma(retry_gen) or "").strip()
+            meta.latency_ms["llm"] = meta.latency_ms.get("llm", 0) + int(
+                (time.perf_counter() - t_gen) * 1000
+            )
             if retry_gen_answer == OLLAMA_TIMEOUT_SENTINEL:
                 logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(retry_gen))
                 logger.info("ANSWER_SOURCE=FALLBACK")
-                return build_assistant_reply(
-                    conv,
-                    _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
-                    attach_followup=False,
-                    is_tr=is_tr,
-                    question=question,
+                return _finalize(
+                    build_assistant_reply(
+                        conv,
+                        _SAFE_FALLBACK_TR if is_tr else _SAFE_FALLBACK_EN,
+                        attach_followup=False,
+                        is_tr=is_tr,
+                        question=question,
+                    ),
+                    answer_source=ANSWER_SOURCE_FALLBACK,
                 )
             answer = retry_gen_answer or answer
         if answer.startswith("Gemma error:"):
-            return build_assistant_reply(conv, answer, status=502, as_detail=True)
+            # Error path: keep legacy ``detail`` shape; meta still travels for /api/v1/ask.
+            return _finalize(
+                build_assistant_reply(conv, answer, status=502, as_detail=True),
+                answer_source=None,
+            )
         if not (answer or "").strip():
-            return build_assistant_reply(
-                conv,
-                no_info_msg,
-                attach_followup=True,
-                is_tr=is_tr,
-                question=question,
+            return _finalize(
+                build_assistant_reply(
+                    conv,
+                    no_info_msg,
+                    attach_followup=True,
+                    is_tr=is_tr,
+                    question=question,
+                ),
+                answer_source=ANSWER_SOURCE_NO_INFO,
             )
         # Dil düzeltmesi: ikinci bir tam Ollama çağrısı dakikalarca sürebilir. Türkçe soruda yalnızca
         # cevap belirgin İngilizceyse çevir (ASCII Türkçe yanıtı yanlışlıkla İngilizce sanma).
@@ -382,17 +465,24 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
         if address_intent:
             answer = _strip_urls_plain_text(answer)
         logger.info("ANSWER_SOURCE=RAG_LLM")
-        return build_assistant_reply(
-            conv,
-            answer,
-            attach_followup=True,
-            is_tr=is_tr,
-            question=question,
+        return _finalize(
+            build_assistant_reply(
+                conv,
+                answer,
+                attach_followup=True,
+                is_tr=is_tr,
+                question=question,
+            ),
+            answer_source=ANSWER_SOURCE_RAG_LLM,
         )
     except Exception:
         logger.exception("Failed to answer question in /ask")
         err_text = "Backend initialization failed. Check model/dependencies and server logs."
-        return build_assistant_reply(conv, err_text, status=500, as_detail=True)
+        return _finalize(
+            build_assistant_reply(conv, err_text, status=500, as_detail=True),
+            answer_source=None,
+        )
 
 
-__all__ = ["run_ask"]
+__all__ = ["run_ask", "AskMeta", "ANSWER_SOURCE_RAG_LLM", "ANSWER_SOURCE_EXTRACTIVE",
+           "ANSWER_SOURCE_FALLBACK", "ANSWER_SOURCE_NO_INFO"]

@@ -1,0 +1,446 @@
+openapi: 3.1.0
+info:
+  title: Acıbadem Chatbot API
+  version: "1.0.0"
+  description: |
+    HTTP contract for the Acıbadem RAG chatbot. This document is the
+    source of truth for the wire format produced by `chatbot.api.v1`;
+    when the serializer in `chatbot/api/v1/serializers.py` changes,
+    update this file in the same patch and `tests/test_openapi_valid.py`
+    will catch syntactic regressions.
+
+    Adım 5.1 introduced the `/api/v1/*` surface. The legacy `/ask`,
+    `/health`, `/conversations/*` routes (mounted at `/` and `/api/`)
+    keep working with their previous payload shapes; this document
+    only describes the v1 contract.
+
+    Auth model
+    ----------
+    * `/api/v1/ask` is **CSRF-exempt by design**. The intended caller
+      is a server-side Next.js Route Handler proxy (see Adım 5.2).
+      Browser callers are blocked by `CORS_ALLOWED_ORIGINS` in
+      production (`DEBUG=0`).
+    * Conversation ownership is bound to the Django session cookie. A
+      client without that cookie creates a new anonymous conversation
+      on every call.
+servers:
+  - url: http://localhost:8000
+    description: Local Django dev server (manage.py runserver)
+  - url: http://127.0.0.1:8000
+    description: Local Django dev server (loopback)
+
+tags:
+  - name: chat
+    description: Chat / question-answer endpoints
+  - name: conversations
+    description: Conversation history (per-session)
+  - name: health
+    description: Liveness probe
+
+paths:
+  /api/v1/ask:
+    post:
+      tags: [chat]
+      summary: Ask the RAG chatbot a question
+      description: |
+        Runs the hybrid embedding retriever (parser + metadata pre-filter
+        + global cosine top-up) and a local Gemma LLM. The user message
+        is persisted on success; on backend failure the same conversation
+        row is preserved so the assistant message can be retried.
+      operationId: askV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AskRequest"
+            examples:
+              basic:
+                summary: First question (no conversation yet)
+                value:
+                  question: "Bilgisayar Mühendisliği bölüm başkanı kim?"
+              followup:
+                summary: Follow-up on an existing conversation
+                value:
+                  question: "CSE101 dersi kaç AKTS?"
+                  conversation_id: 42
+              debug:
+                summary: Operator debugging (chunk text included)
+                value:
+                  question: "Kampüs nerede?"
+                  debug: true
+      responses:
+        "200":
+          description: Successful answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AskResponse"
+        "400":
+          description: Malformed request (invalid JSON, empty question, bad conversation_id)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                empty:
+                  value:
+                    error:
+                      code: empty_question
+                      message: Question cannot be empty.
+                bad_json:
+                  value:
+                    error:
+                      code: invalid_json
+                      message: Request body is not valid JSON.
+        "404":
+          description: conversation_id refers to a row owned by a different session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Upstream LLM (Ollama / Gemma) returned an error string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/health:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      operationId: healthV1
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v1/conversations/:
+    get:
+      tags: [conversations]
+      summary: List conversations owned by the current session
+      operationId: listConversationsV1
+      responses:
+        "200":
+          description: Up to 200 most-recent conversations for this session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results]
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ConversationSummary"
+    post:
+      tags: [conversations]
+      summary: Create a new (empty) conversation bound to the caller session
+      operationId: createConversationV1
+      responses:
+        "201":
+          description: Conversation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationSummary"
+
+  /api/v1/conversations/{id}/:
+    get:
+      tags: [conversations]
+      summary: Fetch a single conversation with all its messages
+      operationId: getConversationV1
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Conversation detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationDetail"
+        "404":
+          description: Not found, or owned by another session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
+                    example: Not found.
+
+components:
+  schemas:
+    AskRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          description: Free-text user question (NFC-normalized server-side)
+        conversation_id:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Existing conversation row to append to. Omit/null to start a new thread.
+        debug:
+          type: boolean
+          default: false
+          description: When true, include `text` on each retrieved chunk (operator-only).
+        strict_rag_verify:
+          type: boolean
+          default: false
+          description: |
+            Operator tool: skip the LLM and return the raw retrieved chunks
+            with no DB writes. Returns a different shape than the regular
+            success response (see `StrictRagVerifyResponse`).
+
+    AskResponse:
+      type: object
+      required:
+        - conversation_id
+        - answer
+        - answer_source
+        - retrieved_chunks
+        - filters
+        - latency_ms
+      properties:
+        conversation_id:
+          type: integer
+          description: Stable id of the conversation the assistant message was appended to
+        answer:
+          type: string
+          description: Final assistant message (post-translation, post-followup-invite)
+        answer_source:
+          type: string
+          nullable: true
+          enum: [RAG_LLM, EXTRACTIVE, FALLBACK, NO_INFO, null]
+          description: |
+            How the answer was produced. `RAG_LLM` means the Gemma model
+            wrote it from retrieved context; `EXTRACTIVE` means a deterministic
+            extractor short-circuited the LLM; `FALLBACK` means retrieval
+            timed out / failed and a stock message was returned; `NO_INFO`
+            means retrieval succeeded but the model produced an empty answer.
+        retrieved_chunks:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetrievedChunk"
+          description: Chunks returned by the hybrid retriever (parser + metadata + global cosine).
+        filters:
+          $ref: "#/components/schemas/QueryFilters"
+        latency_ms:
+          $ref: "#/components/schemas/LatencyMs"
+
+    RetrievedChunk:
+      type: object
+      required: [chunk_id, score, title, url, metadata]
+      properties:
+        chunk_id:
+          type: integer
+          description: PageChunk primary key
+        score:
+          type: number
+          format: float
+          description: Cosine similarity in [-1, 1]; higher is better
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+        content_type:
+          type: string
+          description: Promoted from chunk metadata when present (e.g. `bologna_course`).
+        department:
+          type: string
+          description: Promoted from chunk metadata when present.
+        faculty:
+          type: string
+          description: Promoted from chunk metadata when present.
+        course_code:
+          type: string
+          description: Promoted from chunk metadata when present (e.g. `CSE101`).
+        semester:
+          type: integer
+          description: Promoted from chunk metadata when present.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Full chunk metadata blob (denormalized from PageChunk.metadata).
+        text:
+          type: string
+          description: "Full chunk text. Only included when the request set `debug: true`."
+
+    QueryFilters:
+      type: object
+      required:
+        - faculty
+        - department
+        - course_code
+        - semester
+        - content_types
+        - matched_terms
+      description: |
+        Output of `chatbot.services.query_parser.parse_query`. All keys are
+        always present; unmatched scalars are `null`, unmatched lists are `[]`.
+      properties:
+        faculty:
+          type: string
+          nullable: true
+        department:
+          type: string
+          nullable: true
+        course_code:
+          type: string
+          nullable: true
+        semester:
+          type: integer
+          nullable: true
+        content_types:
+          type: array
+          items:
+            type: string
+        matched_terms:
+          type: array
+          items:
+            type: string
+          description: Diagnostic trace of which patterns fired (e.g. `dept:Bilgisayar Mühendisliği`).
+
+    LatencyMs:
+      type: object
+      description: |
+        Phase timings in milliseconds. Keys may be missing if the corresponding
+        phase did not run (e.g. `llm` is absent on the FALLBACK fast path).
+      properties:
+        retrieve:
+          type: integer
+          minimum: 0
+          description: Hybrid retrieval (parser + metadata + global cosine).
+        llm:
+          type: integer
+          minimum: 0
+          description: Sum of all `ask_gemma` calls for this turn.
+        total:
+          type: integer
+          minimum: 0
+          description: Wall-clock time for the whole `run_ask` call.
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_json
+                - empty_question
+                - invalid_conversation_id
+                - conversation_not_found
+                - llm_error
+                - internal_error
+            message:
+              type: string
+        conversation_id:
+          type: integer
+          nullable: true
+          description: |
+            Present on errors that occurred after a conversation row was created
+            (e.g. LLM failure mid-turn) so the client can correlate.
+
+    StrictRagVerifyResponse:
+      type: object
+      required: [strict_rag_verify, answer, conversation_id, retrieved_chunks]
+      properties:
+        strict_rag_verify:
+          type: boolean
+          enum: [true]
+        answer:
+          type: string
+        conversation_id:
+          nullable: true
+        retrieved_chunks:
+          type: array
+          items:
+            type: object
+            required: [chunk_id, score, url, title, text]
+            properties:
+              chunk_id:
+                type: integer
+              score:
+                type: number
+              url:
+                type: string
+              title:
+                type: string
+              text:
+                type: string
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    ConversationSummary:
+      type: object
+      required: [id, title, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ConversationDetail:
+      allOf:
+        - $ref: "#/components/schemas/ConversationSummary"
+        - type: object
+          required: [messages]
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: "#/components/schemas/Message"
+
+    Message:
+      type: object
+      required: [id, role, content, created_at]
+      properties:
+        id:
+          type: integer
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        created_at:
+          type: string
+          format: date-time
