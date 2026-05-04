@@ -67,3 +67,10 @@ data/scraped/bologna_pilot_smoke.json
 data/scraped/bologna_dom_*.json
 data/scraped/bologna_*.png
 logs/smoke_*.log
+
+# Next.js frontend (Adım 5.2)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/next-env.d.ts

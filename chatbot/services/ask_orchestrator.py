@@ -26,6 +26,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from chatbot.ingestion.metadata_enricher import ContentType
 from chatbot.services.constants import (
     ACIBADEM_GENERAL_FOCUS_BLOCK,
     OFFICIAL_CAMPUS_ADDRESS_BLOCK,
@@ -172,6 +173,27 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
         dept_cat = _faculty_department_catalog_intent(question)
         sub_fac_units = _asks_subunits_of_named_faculty(question)
         general_intro = _general_acibadem_intro_intent(question)
+
+        # Parser runs BEFORE k_ctx so the structured filters can drive retrieval
+        # width. ``parse_query`` is pure (no DB / network), so moving it up here
+        # is free.
+        filters = parse_query(question)
+
+        # Department-scoped course catalog: parser flags both a department AND
+        # a BOLOGNA_COURSE/PROGRAM intent, but no specific course_code. These
+        # questions ("Bilgisayar mühendisliği dersleri nedir?", "What courses
+        # does Industrial Engineering have?") are inherently wide; the default
+        # k_ctx=5 only surfaces program-overview chunks and the LLM refuses
+        # with a stock "no info" reply. Adım 5.3 fix.
+        wants_course_catalog = (
+            bool(filters.department)
+            and not filters.course_code
+            and (
+                ContentType.BOLOGNA_COURSE in filters.content_types
+                or ContentType.BOLOGNA_PROGRAM in filters.content_types
+            )
+        )
+
         k_ctx = 5
         if address_intent or campus_green_q:
             k_ctx = 8
@@ -179,11 +201,14 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
             k_ctx = max(k_ctx, 7)
         if sub_fac_units:
             k_ctx = max(k_ctx, 10)
+        if wants_course_catalog:
+            # 14 chunks is empirically enough for the LLM to enumerate ~10
+            # courses while staying under DJANGO_MAX_CONTEXT_CHARS.
+            k_ctx = max(k_ctx, 14)
         if dept_cat:
             # Fakülte tam listesi için daha fazla parça + bağlam sınırı (model yine kısaltabilir).
             k_ctx = max(k_ctx, 18)
         t_retrieve = time.perf_counter()
-        filters = parse_query(question)
         chunks = _retrieve_top_chunks_by_embedding(question, k=k_ctx, filters=filters)
         retrieve_ms = int((time.perf_counter() - t_retrieve) * 1000)
         meta.filters = filters
@@ -214,11 +239,21 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
             context = re.sub(r"https?://\S+", "", context)
             context = re.sub(r" {2,}", " ", context)
             context = re.sub(r"\n{3,}", "\n\n", context).strip()
+        selected_max_chunks = int(os.environ.get("DJANGO_SELECTED_MAX_CHUNKS", "4"))
+        selected_max_chars = int(os.environ.get("DJANGO_SELECTED_MAX_CHARS", "4200"))
+        if wants_course_catalog:
+            # Course-list answers need many short chunks (one per course). The
+            # default budget (4 chunks / 4200 chars) prunes us back to ~one
+            # program-overview block, which is exactly what triggers the
+            # "no info" stock reply on questions like
+            # "Bilgisayar mühendisliği dersleri nedir?".
+            selected_max_chunks = max(selected_max_chunks, 10)
+            selected_max_chars = max(selected_max_chars, 7000)
         selected_context, selected_sources, retrieved_chunks = _select_context_for_llm(
             question,
             context,
-            max_chunks=int(os.environ.get("DJANGO_SELECTED_MAX_CHUNKS", "4")),
-            max_chars=int(os.environ.get("DJANGO_SELECTED_MAX_CHARS", "4200")),
+            max_chunks=selected_max_chunks,
+            max_chars=selected_max_chars,
         )
         context = selected_context
         logger.info("SELECTED_CONTEXT_FILES=%s", selected_sources)
@@ -268,6 +303,10 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                 max_context_chars,
                 int(os.environ.get("DJANGO_DEPT_CATALOG_CONTEXT_CHARS", "10000")),
             )
+        if wants_course_catalog:
+            # Mirror the bumped select-step budget so the post-cap doesn't
+            # silently truncate everything we just paid retrieval cost for.
+            max_context_chars = max(max_context_chars, selected_max_chars)
         if len(context) > max_context_chars:
             context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
 

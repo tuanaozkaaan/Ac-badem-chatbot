@@ -1,0 +1,26 @@
+# Next.js / Node
+node_modules/
+.next/
+out/
+.turbo/
+
+# Build artifacts
+build/
+dist/
+
+# Logs
+*.log
+
+# Env (local secrets)
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# TypeScript / type generation
+next-env.d.ts
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,26 @@
+{
+  "name": "acudost-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Next.js 14 App Router frontend for the Acıbadem RAG chatbot. Talks to Django via the server-side proxy at app/api/* (Adım 5.2).",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.5",
+    "@types/react-dom": "18.3.0",
+    "eslint": "8.57.1",
+    "eslint-config-next": "14.2.35",
+    "typescript": "5.6.3"
+  }
+}

@@ -321,10 +321,31 @@ INTENT_PATTERNS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
         (ContentType.BOLOGNA_ADMISSION,),
     ),
     (
+        # Course / curriculum intent. Three-tier match so we cover both very
+        # specific phrases ("müfredatı") AND the bare plurals that simply ask
+        # for the program's course list ("dersler", "courses"). The Adım 5.0
+        # cleanup removed a hard-coded CS catalog fallback; without these
+        # plurals the parser tagged "Bilgisayar mühendisliği dersleri nedir?"
+        # with no content_type, the hybrid retriever then returned program-
+        # overview chunks, and the LLM bailed with "no info".
         re.compile(
+            # 1) explicit catalog phrases
             r"\b(?:m[üu]fredat\w*|curriculum\w*"
-            r"|ders\s+(?:kodu\w*|listesi\w*|katalo[gğ]u\w*|i[çc]eri[gğ]i\w*|plan\w*)"
+            # 2) "ders" + qualifier (kodu, listesi, kataloğu, içeriği, planı, programı)
+            r"|ders\s+(?:kodu\w*|listesi\w*|katalo[gğ]u\w*|i[çc]eri[gğ]i\w*"
+            r"|plan[ıi]?\w*|program[ıi]?\w*)"
+            # 3) bare plural Turkish ("dersler", "dersleri", "derslerini",
+            #    "derslerine", "derslerin"). Plural-only on purpose: "ders"
+            #    alone (singular) would over-match conversational uses like
+            #    "bu ders güzeldi" that have nothing to do with catalogs.
+            r"|dersler\w*"
+            # 4) English equivalents — word-boundary so "coursework"/"coursing"
+            #    do NOT match. The optional "list/catalog/plan" qualifier is
+            #    accepted but not required.
+            r"|courses?\b|course\s+(?:list\w*|catalog\w*|plan\w*)"
+            # 5) ECTS / credit cues
             r"|akts\w*|ects\w*|kredi\w*"
+            # 6) "güz/bahar yarıyılı" (specific term)
             r"|(?:g[üu]z|bahar)\s+yar[ıi]y[ıi]l\w*)",
             re.IGNORECASE,
         ),
