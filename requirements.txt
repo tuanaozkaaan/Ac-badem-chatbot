@@ -7,9 +7,10 @@
 #
 beautifulsoup4==4.14.3
 django-cors-headers==4.9.0
+# Adım 5.4: per-IP rate limiting on /api/v1/ask. Storage uses Django's CACHES
+# (LocMemCache by default; switch to Redis for multi-worker deployments).
+django-ratelimit==4.1.0
 Django==5.2.13
-faiss-cpu==1.13.2
-fastapi==0.136.1
 gunicorn==25.3.0
 httpx==0.28.1
 lxml==6.1.0
@@ -25,6 +26,4 @@ sentence-transformers==5.4.1
 # requires ``transformers>=4.41,<6``, so pinning to the 4.x series keeps
 # us inside the supported range while avoiding the broken 5.x release.
 transformers>=4.41,<5
-uvicorn==0.46.0
 whitenoise==6.12.0
-# llama-cpp-python

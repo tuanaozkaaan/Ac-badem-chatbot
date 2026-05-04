@@ -8,7 +8,13 @@
  * spec first.
  */
 
-export type AnswerSource = "RAG_LLM" | "EXTRACTIVE" | "FALLBACK" | "NO_INFO" | null;
+export type AnswerSource =
+  | "RAG_LLM"
+  | "EXTRACTIVE"
+  | "FALLBACK"
+  | "NO_INFO"
+  | "LLM_TIMEOUT"
+  | null;
 
 export interface AskRequest {
   question: string;
@@ -67,7 +73,8 @@ export interface ApiError {
       | "conversation_not_found"
       | "llm_error"
       | "internal_error"
-      | "upstream_unreachable";
+      | "upstream_unreachable"
+      | "rate_limited";
     message: string;
   };
   conversation_id?: number | null;

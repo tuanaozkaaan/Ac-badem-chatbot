@@ -99,12 +99,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: |
+            Too Many Requests. Per-IP rate limit exceeded (Adım 5.4 — see
+            `django-ratelimit` decorator on `ask_v1`). Default budget is
+            ``30/m``; configurable via the ``ACU_ASK_RATE`` env var.
+          headers:
+            Retry-After:
+              description: Hint (in seconds) before the next request will succeed.
+              required: false
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: rate_limited
+                  message: Çok sık soru soruyorsunuz, lütfen biraz bekleyin.
         "502":
           description: Upstream LLM (Ollama / Gemma) returned an error string
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: |
+            Gateway Timeout — the Next.js Route Handler proxy could not reach
+            Django (or Django could not reach Ollama within the proxy budget).
+            UI clients should treat this as a network-error condition.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: upstream_unreachable
+                  message: Backend did not respond in time.
         "500":
           description: Unexpected server error
           content:
@@ -232,13 +265,22 @@ components:
         answer_source:
           type: string
           nullable: true
-          enum: [RAG_LLM, EXTRACTIVE, FALLBACK, NO_INFO, null]
+          enum: [RAG_LLM, EXTRACTIVE, FALLBACK, NO_INFO, LLM_TIMEOUT, null]
           description: |
-            How the answer was produced. `RAG_LLM` means the Gemma model
-            wrote it from retrieved context; `EXTRACTIVE` means a deterministic
-            extractor short-circuited the LLM; `FALLBACK` means retrieval
-            timed out / failed and a stock message was returned; `NO_INFO`
-            means retrieval succeeded but the model produced an empty answer.
+            How the answer was produced.
+
+            * `RAG_LLM` — the Gemma model wrote it from retrieved context.
+            * `EXTRACTIVE` — a deterministic extractor short-circuited the LLM.
+            * `FALLBACK` — retrieval came back empty before the LLM ran; a
+              stock "veri kaynaklarında bulunamadı" message was returned.
+            * `NO_INFO` — retrieval succeeded but either the LLM produced no
+              answer or it emitted a stock "no info" reply (Adım 5.4 detects
+              the latter and overrides `RAG_LLM` → `NO_INFO` so the UI can
+              render suggestion chips).
+            * `LLM_TIMEOUT` — the upstream Ollama/Gemma call exceeded its
+              timeout budget. UI clients should render a "yanıt üretimi
+              gecikti, yoğunluk olabilir" card and offer Retry instead of
+              showing the bare fallback text (Adım 5.4).
         retrieved_chunks:
           type: array
           items:
@@ -359,6 +401,8 @@ components:
                 - conversation_not_found
                 - llm_error
                 - internal_error
+                - rate_limited
+                - upstream_unreachable
             message:
               type: string
         conversation_id:

@@ -2,7 +2,7 @@
 #
 # Security posture:
 # - Required secrets use ${VAR:?msg} so Compose refuses to start without them.
-# - db and ollama are not published to the host; only the web service is exposed.
+# - db and ollama are not published to the host; ``web`` and ``frontend`` are published.
 # - Each service has a healthcheck and `restart: unless-stopped`.
 #
 # Local development conveniences (bind-mounts, exposed db/ollama ports, runserver) live in
@@ -52,6 +52,33 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      # Server-side proxy to Django on the Compose network (browser never calls this URL).
+      ACU_BACKEND_URL: ${ACU_BACKEND_URL:-http://web:8000}
+    ports:
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:3000/',(r)=>process.exit(r.statusCode>=200&&r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     restart: unless-stopped
 
   db:

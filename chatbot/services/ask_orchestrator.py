@@ -74,6 +74,11 @@ ANSWER_SOURCE_RAG_LLM = "RAG_LLM"
 ANSWER_SOURCE_EXTRACTIVE = "EXTRACTIVE"
 ANSWER_SOURCE_FALLBACK = "FALLBACK"
 ANSWER_SOURCE_NO_INFO = "NO_INFO"
+# Adım 5.4: separate the "Ollama / Gemma timed out" path from the generic
+# FALLBACK ("no context to begin with") so the frontend can render a distinct
+# "yanıt üretimi gecikti, yoğunluk olabilir" card with a Retry button instead
+# of the same dead-end message used when retrieval came back empty.
+ANSWER_SOURCE_LLM_TIMEOUT = "LLM_TIMEOUT"
 
 
 @dataclass
@@ -334,7 +339,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
         logger.info("/ask ask_gemma (primary) done in %.2fs", llm_elapsed_ms / 1000.0)
         if answer == OLLAMA_TIMEOUT_SENTINEL:
             logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(prompt))
-            logger.info("ANSWER_SOURCE=FALLBACK")
+            logger.info("ANSWER_SOURCE=LLM_TIMEOUT")
             return _finalize(
                 build_assistant_reply(
                     conv,
@@ -343,7 +348,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                     is_tr=is_tr,
                     question=question,
                 ),
-                answer_source=ANSWER_SOURCE_FALLBACK,
+                answer_source=ANSWER_SOURCE_LLM_TIMEOUT,
             )
         if (
             not (answer or "").strip()
@@ -367,7 +372,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
             logger.info("/ask ask_gemma empty-refill done in %.2fs", ref_elapsed_ms / 1000.0)
             if answer == OLLAMA_TIMEOUT_SENTINEL:
                 logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(refill))
-                logger.info("ANSWER_SOURCE=FALLBACK")
+                logger.info("ANSWER_SOURCE=LLM_TIMEOUT")
                 return _finalize(
                     build_assistant_reply(
                         conv,
@@ -376,7 +381,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                         is_tr=is_tr,
                         question=question,
                     ),
-                    answer_source=ANSWER_SOURCE_FALLBACK,
+                    answer_source=ANSWER_SOURCE_LLM_TIMEOUT,
                 )
         ctx_lc = (context or "").lower()
         if campus_green_q and ctx_lc and any(
@@ -414,7 +419,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                 )
                 if retry_answer == OLLAMA_TIMEOUT_SENTINEL:
                     logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(retry))
-                    logger.info("ANSWER_SOURCE=FALLBACK")
+                    logger.info("ANSWER_SOURCE=LLM_TIMEOUT")
                     return _finalize(
                         build_assistant_reply(
                             conv,
@@ -423,7 +428,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                             is_tr=is_tr,
                             question=question,
                         ),
-                        answer_source=ANSWER_SOURCE_FALLBACK,
+                        answer_source=ANSWER_SOURCE_LLM_TIMEOUT,
                     )
                 answer = retry_answer or answer
         generic_retry_on = (os.environ.get("DJANGO_ENABLE_GENERIC_RETRY") or "0").strip().lower() in (
@@ -460,7 +465,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
             )
             if retry_gen_answer == OLLAMA_TIMEOUT_SENTINEL:
                 logger.info("OLLAMA_TIMEOUT prompt_chars=%s", len(retry_gen))
-                logger.info("ANSWER_SOURCE=FALLBACK")
+                logger.info("ANSWER_SOURCE=LLM_TIMEOUT")
                 return _finalize(
                     build_assistant_reply(
                         conv,
@@ -469,7 +474,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                         is_tr=is_tr,
                         question=question,
                     ),
-                    answer_source=ANSWER_SOURCE_FALLBACK,
+                    answer_source=ANSWER_SOURCE_LLM_TIMEOUT,
                 )
             answer = retry_gen_answer or answer
         if answer.startswith("Gemma error:"):
@@ -503,7 +508,16 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                 logger.info("/ask translate->en done in %.2fs", time.perf_counter() - t_tr)
         if address_intent:
             answer = _strip_urls_plain_text(answer)
-        logger.info("ANSWER_SOURCE=RAG_LLM")
+        # Adım 5.4: if the LLM emitted a stock "I don't know" reply despite the
+        # retrieval pipeline having handed it context, surface NO_INFO on the
+        # wire so the frontend can render suggestion chips instead of treating
+        # it as a successful answer with sources.
+        final_source = (
+            ANSWER_SOURCE_NO_INFO
+            if _answer_is_stock_no_info(answer)
+            else ANSWER_SOURCE_RAG_LLM
+        )
+        logger.info("ANSWER_SOURCE=%s", final_source)
         return _finalize(
             build_assistant_reply(
                 conv,
@@ -512,7 +526,7 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                 is_tr=is_tr,
                 question=question,
             ),
-            answer_source=ANSWER_SOURCE_RAG_LLM,
+            answer_source=final_source,
         )
     except Exception:
         logger.exception("Failed to answer question in /ask")
@@ -523,5 +537,12 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
         )
 
 
-__all__ = ["run_ask", "AskMeta", "ANSWER_SOURCE_RAG_LLM", "ANSWER_SOURCE_EXTRACTIVE",
-           "ANSWER_SOURCE_FALLBACK", "ANSWER_SOURCE_NO_INFO"]
+__all__ = [
+    "run_ask",
+    "AskMeta",
+    "ANSWER_SOURCE_RAG_LLM",
+    "ANSWER_SOURCE_EXTRACTIVE",
+    "ANSWER_SOURCE_FALLBACK",
+    "ANSWER_SOURCE_NO_INFO",
+    "ANSWER_SOURCE_LLM_TIMEOUT",
+]

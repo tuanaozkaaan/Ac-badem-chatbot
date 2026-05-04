@@ -50,6 +50,23 @@ from chatbot.services.query_parser import QueryFilters, parse_query
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth for the embedding model used across the project.
+# Moved here from rag/document_loader.py during the Adım 5.5 dead-code purge —
+# the embedding capability is the only consumer that still mattered.
+#
+# ``paraphrase-multilingual-MiniLM-L12-v2`` is preferred over
+# ``all-MiniLM-L6-v2`` because Acıbadem University content is primarily
+# Turkish — the multilingual checkpoint understands Turkish morphology and
+# inflection (öğrenci / öğrencinin / öğrenciye), Turkish-specific terms
+# (Bologna, ders kataloğu, fakülte), and cross-lingual queries (TR question
+# vs EN syllabus text in OBS) far better than the English-only L6 model.
+# Both checkpoints emit 384-dimensional vectors so the DB schema does not
+# need to change, but the *semantic* space is completely different — every
+# stored vector MUST be regenerated when this constant moves. The
+# ``rebuild_embeddings`` / ``create_embeddings --force`` commands enforce
+# that contract.
+EXPECTED_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
 # Surfaced for the strict-rag verification HTTP wrapper; kept here so the constant
 # travels with the embedding capability rather than the HTTP adapter.
 _STRICT_RAG_NOT_FOUND = "BİLGİ BULUNAMADI (NO CONTEXT FROM DB)"
@@ -86,7 +103,6 @@ def _embedding_matrix_pack(cache_key: tuple[str, int, int]) -> tuple[np.ndarray,
     değişene kadar @lru_cache ile bellekte tutulur — her /ask isteğinde 1947 kez JSON parse etmez.
     """
     from chatbot.models import ChunkEmbedding
-    from rag.document_loader import EXPECTED_EMBEDDING_MODEL
 
     kind, _, __ = cache_key
     source_type = None if kind == "__all__" else kind
@@ -188,7 +204,6 @@ def _retrieve_with_metadata_filter(
     and would defeat any reasonable cache budget.
     """
     from chatbot.models import ChunkEmbedding
-    from rag.document_loader import EXPECTED_EMBEDDING_MODEL
 
     qs = (
         ChunkEmbedding.objects.select_related("chunk")
@@ -264,7 +279,6 @@ def _retrieve_top_chunks_by_embedding(
     addition to whatever the parser produced — they AND together.
     """
     from chatbot.models import ChunkEmbedding
-    from rag.document_loader import EXPECTED_EMBEDDING_MODEL
 
     if filters is None:
         filters = parse_query(question)

@@ -26,7 +26,7 @@ import numpy as np
 from django.core.management.base import BaseCommand, CommandError
 
 from chatbot.models import ChunkEmbedding, PageChunk
-from rag.document_loader import EXPECTED_EMBEDDING_MODEL
+from chatbot.services.embedding import EXPECTED_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 

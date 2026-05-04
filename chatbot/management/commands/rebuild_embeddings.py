@@ -21,7 +21,7 @@ from __future__ import annotations
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
-from rag.document_loader import EXPECTED_EMBEDDING_MODEL
+from chatbot.services.embedding import EXPECTED_EMBEDDING_MODEL
 
 
 class Command(BaseCommand):

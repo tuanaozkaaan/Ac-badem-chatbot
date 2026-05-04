@@ -69,7 +69,12 @@ INSTALLED_APPS = [
 
 # WhiteNoise must sit immediately after SecurityMiddleware to serve collected static
 # files in production without an external web server.
+#
+# RequestIdMiddleware sits at the top so the correlation id is set before any
+# downstream middleware logs anything, and it lives outside the security
+# middleware sandwich because it neither validates nor mutates the request.
 MIDDLEWARE = [
+    "chatbot.middleware.request_id.RequestIdMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -112,6 +117,18 @@ DATABASES = {
     }
 }
 
+# Cache backend. Adım 5.4 wires ``django-ratelimit`` to this cache; the
+# in-process LocMemCache is sufficient for single-worker dev. For multi-worker
+# / multi-host deployments you MUST switch to a shared backend (Redis,
+# Memcached) or each worker will enforce its own private bucket and the
+# advertised rate is effectively multiplied by the worker count.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "acu-chatbot-default",
+    },
+}
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -134,27 +151,59 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Match prior FastAPI routes: POST /ask without trailing slash (no redirect on POST).
 APPEND_SLASH = False
 
+# Adım 5.5 CORS strategy
+# ----------------------
+# The Next.js frontend talks to Django via a server-side Route Handler proxy
+# (see frontend/app/lib/proxy.ts), so the browser is single-origin from its
+# point of view and CORS is mostly inert.
+#
+# We still keep django-cors-headers wired up for two reasons:
+#   1) the legacy `/ask` SPA template at the Django origin still ships and a
+#      developer might point it at a different host during testing,
+#   2) external integrations (Postman, curl from another origin, federated
+#      apps) are the canonical "allowlisted via CORS" callers.
+#
+# Therefore: NEVER use `CORS_ALLOW_ALL_ORIGINS=True`. Even in dev, only
+# explicit known origins are accepted. The proxy strategy means the
+# allowlist may be empty in production — `setdefault` lets that be a
+# legitimate value rather than a misconfiguration.
+_DEFAULT_DEV_CORS_ORIGINS = (
+    "http://localhost:3000,"
+    "http://127.0.0.1:3000,"
+    "http://localhost:8000,"
+    "http://127.0.0.1:8000,"
+    "http://localhost:8001,"
+    "http://127.0.0.1:8001"
+)
+
 if DEBUG:
-    # Local dev: allow same-origin pages on common dev ports without explicit configuration.
-    CORS_ALLOW_ALL_ORIGINS = True
-    CSRF_TRUSTED_ORIGINS = [
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:8001",
-        "http://127.0.0.1:8001",
+    CORS_ALLOWED_ORIGINS = [
+        o.strip()
+        for o in _env("DJANGO_CORS_ALLOWED_ORIGINS", _DEFAULT_DEV_CORS_ORIGINS).split(",")
+        if o.strip()
     ]
+    CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
 else:
+    # Production: the allowlist is sourced from the deploy environment. An
+    # empty list is the correct value when the only legitimate caller is the
+    # server-side Next.js proxy (which never goes through CORS). Operators
+    # who add browser-direct callers must add their origins here explicitly.
     CORS_ALLOWED_ORIGINS = [
         o.strip()
         for o in _env("DJANGO_CORS_ALLOWED_ORIGINS", "").split(",")
         if o.strip()
     ]
-    if not CORS_ALLOWED_ORIGINS:
-        raise ImproperlyConfigured(
-            "DJANGO_CORS_ALLOWED_ORIGINS must list explicit origins when DEBUG=0."
-        )
-    # CSRF_TRUSTED_ORIGINS mirrors CORS allow-list so cookie-authenticated POSTs work behind a proxy.
-    CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
+    # CSRF_TRUSTED_ORIGINS still needs at least the Next.js public origin so
+    # cookie-authenticated POSTs from the proxy succeed. Operators who run
+    # the frontend on a different host MUST set ``DJANGO_CSRF_TRUSTED_ORIGINS``.
+    CSRF_TRUSTED_ORIGINS = [
+        o.strip()
+        for o in _env(
+            "DJANGO_CSRF_TRUSTED_ORIGINS",
+            ",".join(CORS_ALLOWED_ORIGINS),
+        ).split(",")
+        if o.strip()
+    ]
 
     # Hardening that only makes sense behind TLS termination.
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -171,15 +220,24 @@ else:
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        # Adım 5.5: every log record gets a `request_id` attribute so the
+        # ``default`` formatter can reference it. Outside an HTTP request the
+        # filter still fires and writes ``"-"``, keeping the column aligned.
+        "request_id": {
+            "()": "chatbot.middleware.request_id.RequestIdFilter",
+        },
+    },
     "formatters": {
         "default": {
-            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "format": "%(asctime)s [%(levelname)s] [%(request_id)s] %(name)s: %(message)s",
         },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "default",
+            "filters": ["request_id"],
         },
     },
     "root": {

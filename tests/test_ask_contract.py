@@ -198,8 +198,20 @@ def test_ask_v1_is_csrf_exempt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.django_db
-def test_ask_v1_health_endpoint() -> None:
+def test_ask_v1_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sanity check: /api/v1/health returns the canonical "all green" shape.
+
+    The probe call sites are exercised in detail by ``test_health_probe.py``;
+    this contract test only pins that the endpoint exists and the wire
+    shape (`status` + `db` + `llm` keys) does not regress.
+    """
+    from chatbot.api.v1 import views as v1_views
+
+    monkeypatch.setattr(v1_views, "_probe_database", lambda: ("up", None))
+    monkeypatch.setattr(v1_views, "_probe_llm", lambda: ("up", None))
+
     client = Client()
     r = client.get("/api/v1/health")
     assert r.status_code == 200
-    assert json.loads(r.content.decode("utf-8")) == {"status": "ok"}
+    body = json.loads(r.content.decode("utf-8"))
+    assert body == {"status": "ok", "db": "up", "llm": "up"}

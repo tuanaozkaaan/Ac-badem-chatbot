@@ -898,3 +898,236 @@ body::before {
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
 }
+
+/* ----- Top banner (Adım 5.4 — offline / rate-limit / server) -------------- *
+ * Inserts a thin, full-width strip above .topbar. Lives outside the chat
+ * column so the message area never moves when it appears.
+ */
+.top-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--panel-border);
+  background: linear-gradient(180deg, rgba(20, 26, 40, 0.95), rgba(14, 18, 28, 0.95));
+  font-size: 13px;
+  line-height: 1.4;
+  position: relative;
+  z-index: 3;
+  backdrop-filter: blur(12px);
+}
+
+.top-banner-offline {
+  border-left: 3px solid var(--muted);
+}
+
+.top-banner-rate_limited {
+  border-left: 3px solid var(--gold);
+  background: linear-gradient(180deg, rgba(60, 48, 16, 0.55), rgba(30, 24, 10, 0.7));
+}
+
+.top-banner-server_unreachable {
+  border-left: 3px solid #e25555;
+  background: linear-gradient(180deg, rgba(72, 24, 24, 0.55), rgba(34, 14, 14, 0.7));
+}
+
+.top-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  animation: pulse 1.4s ease-in-out infinite;
+  opacity: 0.85;
+}
+
+.top-banner-offline .top-banner-dot {
+  color: var(--muted);
+}
+
+.top-banner-rate_limited .top-banner-dot {
+  color: var(--gold);
+}
+
+.top-banner-server_unreachable .top-banner-dot {
+  color: #e25555;
+}
+
+.top-banner-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.top-banner-text strong {
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.top-banner-text span {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.65;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 1;
+  }
+}
+
+/* ----- Timeout card (Adım 5.4 — answer_source=LLM_TIMEOUT) ---------------- *
+ * Sits inside the assistant .msg-main slot exactly where a normal bubble
+ * would; it is intentionally NOT styled like a hard error so the user
+ * reads "we tried, taking longer than usual" rather than "broken".
+ */
+.timeout-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  border-radius: var(--radius-lg);
+  padding: 16px 18px 14px;
+  border: 1px solid rgba(201, 162, 39, 0.32);
+  background: linear-gradient(125deg, rgba(40, 32, 12, 0.65), rgba(24, 22, 14, 0.85));
+  border-left: 3px solid var(--gold);
+  box-shadow: var(--shadow-soft);
+  max-width: min(92%, 720px);
+}
+
+.timeout-card-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(201, 162, 39, 0.14);
+  color: var(--gold);
+}
+
+.timeout-card-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.timeout-card-body strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.timeout-card-body p {
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.timeout-retry-btn {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+
+.timeout-retry-btn:hover:not(:disabled) {
+  background: rgba(61, 122, 238, 0.14);
+  border-color: rgba(61, 122, 238, 0.45);
+}
+
+.timeout-retry-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.timeout-retry-btn:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.timeout-retry-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ----- No-info suggestions (Adım 5.4 — answer_source NO_INFO/FALLBACK) ----- *
+ * Three chips beneath the assistant bubble; clicking one fires the same
+ * "send a question" path as the composer. Visually mirrors the existing
+ * .suggestion-card on the welcome screen but compact (one row).
+ */
+.no-info-suggestions {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(92%, 720px);
+}
+
+.no-info-suggestions-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-left: 2px;
+}
+
+.no-info-suggestions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.no-info-chip {
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: #e4eaf5;
+  border-radius: 999px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+  text-align: left;
+}
+
+.no-info-chip:hover:not(:disabled) {
+  background: rgba(61, 122, 238, 0.1);
+  border-color: rgba(61, 122, 238, 0.4);
+  transform: translateY(-1px);
+}
+
+.no-info-chip:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.no-info-chip:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.no-info-chip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

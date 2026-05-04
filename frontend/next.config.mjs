@@ -16,6 +16,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Smaller production images when running ``next start`` from ``.next/standalone`` (Dockerfile).
+  output: "standalone",
   // Surfaces lint failures during ``next build``; strictNullChecks etc. are
   // controlled by tsconfig.json.
   eslint: {

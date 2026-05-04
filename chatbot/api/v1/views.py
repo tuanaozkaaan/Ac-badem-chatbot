@@ -27,6 +27,7 @@ from django.middleware.csrf import get_token
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
+from django_ratelimit.decorators import ratelimit
 
 from chatbot.api.v1.permissions import (
     assert_conversation_owned,
@@ -46,9 +47,88 @@ from chatbot.services.embedding import (
     _retrieve_top_chunks_by_embedding,
 )
 
+# Per-IP request budget for /api/v1/ask. The LLM round-trip is slow (Gemma 7B
+# ~5-30s), so a healthy human user produces at most ~5 questions/min; ``30/m``
+# leaves headroom for legit users on shared NAT while still capping a runaway
+# script. Override at deploy time with ``ACU_ASK_RATE`` (django-ratelimit
+# rate string format).
+_ASK_RATE_LIMIT = os.environ.get("ACU_ASK_RATE", "30/m")
+
+
+def _probe_database() -> tuple[str, str | None]:
+    """Cheap liveness ping against the configured Postgres connection.
+
+    Returns ``("up", None)`` on success and ``("down", message)`` otherwise.
+    The probe deliberately runs on the ``default`` connection (the one the
+    chatbot reads/writes) — verifying a different alias would not catch the
+    real failure modes (psycopg2 cannot resolve host, credentials wrong,
+    pgbouncer down, ...).
+    """
+    from django.db import DatabaseError, connection
+
+    try:
+        with connection.cursor() as cur:
+            cur.execute("SELECT 1")
+            row = cur.fetchone()
+        if row and row[0] == 1:
+            return ("up", None)
+        return ("down", "unexpected SELECT 1 result")
+    except DatabaseError as exc:
+        return ("down", str(exc))
+    except Exception as exc:  # noqa: BLE001 — surface any backend failure
+        return ("down", f"{type(exc).__name__}: {exc}")
+
+
+def _probe_llm() -> tuple[str, str | None]:
+    """HTTP HEAD-ish probe against ``OLLAMA_BASE_URL``.
+
+    Uses ``/api/tags`` (Ollama's "list local models" endpoint, GET, cheap)
+    rather than ``/api/generate`` so we never trigger a model load. A short
+    timeout keeps the health endpoint snappy under back-pressure.
+    """
+    import requests
+
+    base = (os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+    timeout_raw = os.environ.get("ACU_HEALTH_LLM_TIMEOUT_S", "2.0")
+    try:
+        timeout = max(0.5, float(timeout_raw))
+    except ValueError:
+        timeout = 2.0
+    try:
+        response = requests.get(f"{base}/api/tags", timeout=timeout)
+    except requests.RequestException as exc:
+        return ("down", f"{type(exc).__name__}: {exc}")
+    if 200 <= response.status_code < 500:
+        # 200 is ideal; 4xx still proves the server is up and answering. We
+        # only treat 5xx and connection errors as "down" so a stricter Ollama
+        # build that 401s on /api/tags does not fail the deploy gate.
+        return ("up", None)
+    return ("down", f"HTTP {response.status_code}")
+
 
 def health(_request):
-    return JsonResponse({"status": "ok"})
+    """Liveness + dependency probe (Adım 5.5).
+
+    Aggregate status is ``ok`` only when both the DB and the LLM probe are up;
+    any failure flips the top-level status to ``degraded`` and the response
+    code to 503 so a Compose / k8s healthcheck can react immediately. Probe
+    detail messages are kept on the wire to make on-call triage one step
+    faster.
+    """
+    db_status, db_detail = _probe_database()
+    llm_status, llm_detail = _probe_llm()
+
+    everything_up = db_status == "up" and llm_status == "up"
+    body: dict[str, object] = {
+        "status": "ok" if everything_up else "degraded",
+        "db": db_status,
+        "llm": llm_status,
+    }
+    if db_detail:
+        body["db_detail"] = db_detail
+    if llm_detail:
+        body["llm_detail"] = llm_detail
+    return JsonResponse(body, status=200 if everything_up else 503)
 
 
 def _strict_rag_verify_response(question: str, body: dict) -> JsonResponse:
@@ -194,6 +274,7 @@ def _resolve_conversation_v1(body: dict, request) -> tuple[object | None, JsonRe
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@ratelimit(key="ip", rate=_ASK_RATE_LIMIT, block=False)
 def ask_v1(request):
     """Stable JSON contract for the chatbot. See ``docs/openapi.yaml`` for the schema.
 
@@ -207,7 +288,22 @@ def ask_v1(request):
 
     Success (HTTP 200) returns the shape produced by :func:`serialize_ask_response`.
     Errors return ``{"error": {"code", "message"}}`` with an appropriate 4xx/5xx.
+
+    Rate limiting (Adım 5.4)
+    ------------------------
+    ``django-ratelimit`` decorates this view with ``key="ip", rate=ACU_ASK_RATE``
+    and ``block=False``. We do not let the library raise; instead we inspect
+    ``request.limited`` here so a 429 follows the canonical error envelope.
     """
+    if getattr(request, "limited", False):
+        return JsonResponse(
+            serialize_error(
+                "rate_limited",
+                "Çok sık soru soruyorsunuz, lütfen biraz bekleyin.",
+            ),
+            status=429,
+        )
+
     try:
         body = json.loads(request.body.decode("utf-8") or "{}")
     except json.JSONDecodeError:
