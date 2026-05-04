@@ -7,7 +7,13 @@ wrap into a JsonResponse.
 
 Allowed dependency direction (top of the DAG):
     ask_orchestrator → constants, language, intents, context_select, extractive,
-                       retrieval, embedding, llm_client, prompts, conversation_repo
+                       embedding, query_parser, llm_client, prompts, conversation_repo
+
+Retrieval (Adım 5.0.5)
+----------------------
+Production `/ask` uses :func:`chatbot.services.embedding._retrieve_top_chunks_by_embedding`
+(parser + hybrid metadata filter + global cosine). Legacy keyword-only retrieval was
+removed from this path.
 """
 from __future__ import annotations
 
@@ -36,9 +42,6 @@ from chatbot.services.embedding import _retrieve_top_chunks_by_embedding
 from chatbot.services.extractive import _try_extractive_answer
 from chatbot.services.intents import (
     _asks_subunits_of_named_faculty,
-    _ce_overview_context_block,
-    _cs_engineering_course_catalog_intent,
-    _cs_engineering_lisans_intent,
     _faculty_department_catalog_intent,
     _general_acibadem_intro_intent,
     _green_or_sustainable_campus_question,
@@ -56,9 +59,28 @@ from chatbot.services.llm_client import (
     translate_answer,
 )
 from chatbot.services.prompts import build_ask_prompt
-from chatbot.services.retrieval import retrieve_context
+from chatbot.services.query_parser import parse_query
 
 logger = logging.getLogger(__name__)
+
+
+def _context_from_hybrid_chunks(chunks: list[dict]) -> str:
+    """Turn hybrid embedding hits into the same ``---`` block layout as legacy retrieval.
+
+    Each block's first line is a ``[title | url]`` tag so :func:`_select_context_for_llm`
+    and :func:`_extract_block_source_label` behave consistently.
+    """
+    blocks: list[str] = []
+    for c in chunks:
+        title = (c.get("title") or "").strip()
+        url = (c.get("url") or "").strip()
+        body = (c.get("text") or "").strip()
+        if not body:
+            continue
+        meta_parts = [p for p in (title, url) if p]
+        meta = " | ".join(meta_parts)
+        blocks.append(f"[{meta}]\n{body}" if meta else body)
+    return "\n\n---\n\n".join(blocks).strip()
 
 
 def run_ask(question: str, conv) -> tuple[dict, int]:
@@ -105,13 +127,11 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
                 "nerede",
             )
         )
-        cs_eng_q = _cs_engineering_lisans_intent(question)
-        cs_course_catalog_q = _cs_engineering_course_catalog_intent(question)
         dept_cat = _faculty_department_catalog_intent(question)
         sub_fac_units = _asks_subunits_of_named_faculty(question)
         general_intro = _general_acibadem_intro_intent(question)
         k_ctx = 5
-        if address_intent or cs_eng_q or campus_green_q:
+        if address_intent or campus_green_q:
             k_ctx = 8
         if general_intro:
             k_ctx = max(k_ctx, 7)
@@ -120,11 +140,16 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
         if dept_cat:
             # Fakülte tam listesi için daha fazla parça + bağlam sınırı (model yine kısaltabilir).
             k_ctx = max(k_ctx, 18)
-        if cs_course_catalog_q:
-            k_ctx = max(k_ctx, 14)
         t_retrieve = time.perf_counter()
-        context = retrieve_context(question, k=k_ctx)
-        logger.info("/ask retrieve_context done in %.2fs", time.perf_counter() - t_retrieve)
+        filters = parse_query(question)
+        chunks = _retrieve_top_chunks_by_embedding(question, k=k_ctx, filters=filters)
+        context = _context_from_hybrid_chunks(chunks)
+        logger.info(
+            "/ask hybrid_retrieval done in %.2fs chunks=%s matched_terms=%s",
+            time.perf_counter() - t_retrieve,
+            len(chunks),
+            filters.matched_terms,
+        )
         if general_intro:
             ctx0 = (context or "").strip()
             context = (
@@ -143,46 +168,6 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
             context = re.sub(r"https?://\S+", "", context)
             context = re.sub(r" {2,}", " ", context)
             context = re.sub(r"\n{3,}", "\n\n", context).strip()
-        if cs_eng_q and not cs_course_catalog_q:
-            ce_block = _ce_overview_context_block()
-            ctx_body = (context or "").strip()
-            context = f"{ce_block}\n\n{ctx_body}".strip() if ctx_body else ce_block
-        # Varsayılan KAPALI: CPU'da tüm embedding matrisi + Ollama 4–7 dk'ı aşabiliyor.
-        # Açmak için: ACU_COURSE_CATALOG_EMBED_AUGMENT=1 (veya true) — önbellek ısındıktan sonra daha hızlı.
-        if cs_course_catalog_q and (
-            (os.environ.get("ACU_COURSE_CATALOG_EMBED_AUGMENT") or "0").strip().lower()
-            not in ("0", "false", "no")
-        ):
-            try:
-                from chatbot.models import ChunkEmbedding as _CEMod
-
-                emb_k = min(8, max(6, k_ctx // 2 + 2))
-                obs_emb_n = _CEMod.objects.filter(chunk__source_type="obs").count()
-                # Tek tarama: OBS embedding varsa sadece obs; yoksa tümü (çift tarama kaldırıldı).
-                emb_chunks = _retrieve_top_chunks_by_embedding(
-                    question,
-                    k=emb_k,
-                    source_type="obs" if obs_emb_n > 0 else None,
-                )
-                if emb_chunks:
-                    lines: list[str] = []
-                    for c in emb_chunks:
-                        meta = " | ".join([p for p in [c.get("title") or "", c.get("url") or ""] if p])
-                        t = (c.get("text") or "").strip()
-                        if not t:
-                            continue
-                        lines.append(f"[{meta}]\n{t}" if meta else t)
-                    if lines:
-                        inject = "\n\n---\n\n".join(lines)
-                        base = (context or "").strip()
-                        context = (
-                            f"{base}\n\n---\n\n"
-                            f"[İlgili parçalar — anlamsal (embedding) arama]\n\n{inject}".strip()
-                            if base
-                            else f"[İlgili parçalar — anlamsal (embedding) arama]\n\n{inject}".strip()
-                        )
-            except Exception:
-                logger.exception("course_catalog_embedding_augment_failed")
         selected_context, selected_sources, retrieved_chunks = _select_context_for_llm(
             question,
             context,
@@ -226,19 +211,10 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
             logger.info("EXTRACTIVE_NOT_FOUND_CONTINUE_TO_LLM")
 
         max_context_chars = int(os.environ.get("DJANGO_MAX_CONTEXT_CHARS", "4200"))
-        embed_augment_on = (
-            (os.environ.get("ACU_COURSE_CATALOG_EMBED_AUGMENT") or "0").strip().lower()
-            not in ("0", "false", "no")
-        )
         if dept_cat:
             max_context_chars = max(
                 max_context_chars,
                 int(os.environ.get("DJANGO_DEPT_CATALOG_CONTEXT_CHARS", "10000")),
-            )
-        if cs_course_catalog_q and embed_augment_on:
-            max_context_chars = max(
-                max_context_chars,
-                int(os.environ.get("DJANGO_COURSE_CATALOG_CONTEXT_CHARS", "14000")),
             )
         if len(context) > max_context_chars:
             context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
@@ -248,8 +224,6 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
             context=context,
             is_tr=is_tr,
             address_intent=address_intent,
-            cs_eng_q=cs_eng_q,
-            cs_course_catalog_q=cs_course_catalog_q,
             campus_green_q=campus_green_q,
             dept_cat=dept_cat,
             general_intro=general_intro,
@@ -352,9 +326,9 @@ def run_ask(question: str, conv) -> tuple[dict, int]:
         if (
             generic_retry_on
             and (
-            _context_likely_relevant(question, context)
-            and _answer_is_stock_no_info(answer)
-            and len((context or "").strip()) > 120
+                _context_likely_relevant(question, context)
+                and _answer_is_stock_no_info(answer)
+                and len((context or "").strip()) > 120
             )
         ):
             retry_gen = (

@@ -1,4 +1,4 @@
-"""Context block helpers used by retrieval, the orchestrator, and extractive answers.
+"""Context block helpers used by the orchestrator and extractive answers.
 
 Responsibilities:
     * Splitting a retrieved context blob into blocks and labelling their source.
