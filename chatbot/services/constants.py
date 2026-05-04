@@ -24,22 +24,6 @@ OFFICIAL_CAMPUS_ADDRESS_BLOCK = (
     "E-posta: info@acibadem.edu.tr\n"
 )
 
-_CE_OVERVIEW_FALLBACK = (
-    "[Özet kaynak — Bilgisayar Mühendisliği lisans; resmî müfredat değildir]\n"
-    "Bilgisayar Mühendisliği lisans programı yazılım ve donanımı birlikte ele alır; algoritma, veri yapıları, "
-    "işletim sistemleri ve mimari, veritabanları, ağlar, yazılım mühendisliği ve proje dersleri tipik kapsamdadır "
-    "(ders adları üniversiteye göre değişir). Bilgisayar Programcılığı önlisans programı ayrı bir düzeydedir."
-)
-
-_ENGINEERING_DEPARTMENTS_FILE = "engineering_natural_sciences_departments.txt"
-_ENGINEERING_DEPARTMENTS_FALLBACK = (
-    "Mühendislik ve Doğa Bilimleri Fakültesi şu bölümleri içerir:\n"
-    "- Bilgisayar Mühendisliği\n"
-    "- Biyomedikal Mühendisliği\n"
-    "- Moleküler Biyoloji ve Genetik (MBG)\n\n"
-    "Not: Bu bilgi yerel veri dosyalarından derlenmiştir."
-)
-
 _SAFE_FALLBACK_TR = (
     "Bu bilgi yerel veri kaynaklarında net olarak bulunamadı. "
     "En doğru ve güncel bilgi için Acıbadem Üniversitesi’nin resmi web sitesini kontrol etmeniz önerilir."
@@ -52,9 +36,6 @@ _SAFE_FALLBACK_EN = (
 __all__ = [
     "ACIBADEM_GENERAL_FOCUS_BLOCK",
     "OFFICIAL_CAMPUS_ADDRESS_BLOCK",
-    "_CE_OVERVIEW_FALLBACK",
-    "_ENGINEERING_DEPARTMENTS_FILE",
-    "_ENGINEERING_DEPARTMENTS_FALLBACK",
     "_SAFE_FALLBACK_TR",
     "_SAFE_FALLBACK_EN",
 ]
