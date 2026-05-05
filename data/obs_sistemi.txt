@@ -1,0 +1,109 @@
+Kaynak: https://obs.acibadem.edu.tr (köşe sayfa + /oibs/bologna/… altındaki herkese açık program sayfaları).
+Not: Bu özet, otomatik sayfa çekimiyle üretilmiştir; “Dersler” ana tablosu birçok programda tarayıcıda dinamik yüklendiği için tablo satırları (ders kodu, sıralı AKTS, şube saatleri) buraya tam aktarılamamıştır — güncel tablo için ilgili programın progCourses bağlantısından bakılmalıdır.
+
+================================================================================
+OBS NEDİR (KISA)
+================================================================================
+- Acıbadem Mehmet Ali Aydınlar Üniversitesi Öğrenci Bilgi Sistemi (Önlisans / Lisans / Enstitü).
+- Ana giriş: öğrenci, akademisyen ve idari personel oturumları için portal; kök sayfada ders katalog tablosu yoktur.
+
+================================================================================
+BOLOGNA / PROGRAM SAYFALARI (GENEL YAPI)
+================================================================================
+- Katalog ve müfredat metni çoğunlukla şu adrese bağlıdır: …/oibs/bologna/…
+- Program kimliği URL’de genelde ``curSunit=…`` ile verilir (örnek pilot değerler: Bilgisayar Mühendisliği 6246, Biyomedikal Mühendisliği 6247).
+- Tipik sayfa adları: progCourses (ders listesi), progLearnOutcomes (program öğrenme çıktıları), progGraduationReq (mezuniyet ve AKTS özeti), progAbout (program özeti ve içerik anlatımı).
+
+================================================================================
+ÖRNEK PROGRAM 1 — Bilgisayar Mühendisliği (İngilizce), curSunit=6246
+================================================================================
+Kimlik (progAbout tablosu özeti):
+- Dil: İngilizce.
+- Süre: 4 yıl; azami 7 yıl.
+- Kontenjan (sayfadaki değer): 61.
+- Staj: Var.
+- Mezuniyet unvanı: Bilgisayar Mühendisi.
+- ÖSYM puan türü: SAY.
+
+Müfredat / ders yapısı (Program İçeriği metninden özet cümleler):
+- Odak: Veri bilimi ve yapay zeka çizgisinde lisans.
+- İlk iki yıl: temel bilim, programlama, algoritma.
+- Üçüncü sınıf: teknik alan eğitimi ile derinleşme.
+- Sekiz zorunlu “alan” dersi ile temel bilgisayar mühendisliği omurgası.
+- Veri bilimi hattında dört zorunlu alan dersi adları: Exploratory Data Analysis, Data Systems, Cluster Computing, Data Science & AI.
+- Sistem / çekirdek alan dersleri: Computer Architecture, Software, Computer & Social Networks, Operating Systems.
+- Matematik hattı (ilk üç yıl): Discrete Mathematics, Linear Algebra, Differential Equations, Statistics, Optimization.
+- Yönetsel / çapraz dersler: Proje Yönetimi, Teknoloji & İnovasyon, Mühendislik Etiği, Bilim & İnsan, Profesyonel Gelişim (müfredatta dağıtık).
+- Son sınıf: dört teknik seçmeli + iki mezuniyet projesi dersi; seçmeli konular arasında veri görselleştirme, veri mühendisliği, mikroservis, mobil, büyük veri, sosyal ağlar, sağlık enformatiği, NLP, veri madenciliği, derin öğrenme vb. öngörülür.
+
+Kredi ve mezuniyet (progGraduationReq):
+- En az 240 AKTS.
+- Not ortalaması 4.00 üzerinden en az 2.00.
+- Tüm dersler başarılı; FF, FG, NA ve U notu olmamalı.
+- Yaz stajı: 2. ve 3. sınıf sonrası toplam 20+20 iş günü (staj yönergesine uygun).
+
+Ölçme (progAbout — özet):
+- Ara sınav, quiz, pratik, proje, rapor, final vb.
+- Harf notu ölçeği sayfada AA–DD aralıkları ve katsayılar ile tabloludur; FF/FG/NA/T/S/U/W kodları tanımlıdır.
+
+Program öğrenme çıktıları (progLearnOutcomes — 11 madde):
+1. Matematik, fen ve mühendislikte yeterli bilgi; karmaşık problemlerde kullanabilme.
+2. Karmaşık problemi tanımlama, formüle etme, çözme; uygun analiz/modelleme seçme.
+3. Kısıtlar altında tasarım; modern tasarım yöntemleri.
+4. Modern teknik ve araçlar; bilişim teknolojilerini etkin kullanma.
+5. Deney tasarlama, uygulama, veri toplama, analiz ve yorum.
+6. Disiplin içi ve çok disiplinli takımda çalışma; bireysel çalışma.
+7. Türkçe sözlü/yazılı iletişim; en az bir yabancı dil; rapor ve sunum.
+8. Yaşam boyu öğrenme bilinci; gelişmeleri izleme ve yenilenme.
+9. Etik ve mesleki sorumluluk; standartlar bilgisi.
+10. Proje/risk/değişiklik yönetimi bilgisi; girişimcilik ve sürdürülebilirlik farkındalığı.
+11. Sağlık, çevre, güvenlik ve hukuki boyutlarda farkındalık.
+
+Bağlantılar:
+- Ders tablosu (dinamik): https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=tr&curSunit=6246
+- Öğrenme çıktıları: https://obs.acibadem.edu.tr/oibs/bologna/progLearnOutcomes.aspx?lang=tr&curSunit=6246
+- Mezuniyet koşulları: https://obs.acibadem.edu.tr/oibs/bologna/progGraduationReq.aspx?lang=tr&curSunit=6246
+
+================================================================================
+ÖRNEK PROGRAM 2 — Biyomedikal Mühendisliği (İngilizce), curSunit=6247
+================================================================================
+Kimlik (progAbout tablosu özeti):
+- Dil: İngilizce.
+- Süre: 4 yıl; azami 7 yıl.
+- Kontenjan (sayfadaki değer): 36.
+- Staj: Var.
+- Mezuniyet unvanı: Biyomedikal Mühendisi.
+- ÖSYM puan türü: SAY.
+
+Müfredat özeti (uzun tanıtım metni yerine işlevsel özet):
+- Disiplinler arası biyomedikal/tıp mühendisliği çizgisi; tasarım, üretim ve kullanım odaklı aygıt/biyomalzeme.
+- Proje odaklı yapı; seçmeliler biyomedikal, biyomalzeme, nanobiyoteknoloji, klinik mühendislik ekseninde yoğunlaştırılmış.
+- Uygulamalı “klinik gözlem ve inovasyon” dersi ile klinik gözlem ve problem çözüm projesi.
+- Yaz stajı: şirket/hastane veya öğretim üyesi araştırması; Sağlık Grubu birimlerinde staj seçenekleri belirtilir.
+
+Kredi ve mezuniyet (progGraduationReq — Bilgisayar ile aynı yapı):
+- En az 240 AKTS; GPA ≥ 2.00/4.00; başarısızlık notları yok; 20+20 iş günü yaz stajı.
+
+Program öğrenme çıktıları (progLearnOutcomes — 11 madde, Biyomedikal özelleşmiş):
+1. BM özelinde matematik, istatistik, temel bilim ve karmaşık problemleri uygulama.
+2. Karmaşık problemi tanımlama/çözme ve analiz yöntemi seçme.
+3. Tasarım yöntemleriyle sistem/cihaz/ürün geliştirme.
+4. Güncel mühendislik araçları ve BT’yi etkin kullanma (BM mesleği için).
+5. Deney, veri, analiz ve yorum.
+6. Bireysel ve çok disiplinli takım çalışması.
+7. İngilizce iletişim, rapor ve sunum.
+8. Yaşam boyu öğrenme ve gelişmeleri izleme.
+9. Etik, mesleki sorumluluk ve standartları BM alanında uygulama.
+10. Proje/risk yönetimi, girişimcilik, sürdürülebilirlik ve yenilikçi BM teknolojileri.
+11. BM’nin sağlık, çevre ve toplumsal etkilerini bilme ve sonuçları değerlendirme.
+
+Bağlantılar:
+- Ders tablosu (dinamik): https://obs.acibadem.edu.tr/oibs/bologna/progCourses.aspx?lang=tr&curSunit=6247
+- Öğrenme çıktıları: https://obs.acibadem.edu.tr/oibs/bologna/progLearnOutcomes.aspx?lang=tr&curSunit=6247
+- Program özeti: https://obs.acibadem.edu.tr/oibs/bologna/progAbout.aspx?lang=tr&curSunit=6247
+
+================================================================================
+DİĞER PROGRAMLAR İÇİN NOT
+================================================================================
+- Farklı bölümlerin katalogları için OBS Bologna’da ilgili ``curSunit`` değeri seçilerek aynı sayfa tipleri kullanılır.
+- Tam kredi-dağılımı, haftalık ders programı ve her dersin tek tek AKTS’si progCourses çıktısından okunmalıdır (bu çekimde tablo gövdesi gelmedi).

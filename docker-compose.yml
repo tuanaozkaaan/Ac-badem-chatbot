@@ -24,7 +24,7 @@ services:
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?DJANGO_ALLOWED_HOSTS is required}
       DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS:-}
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma:7b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma:2b}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-256}
       OLLAMA_TEMPERATURE: ${OLLAMA_TEMPERATURE:-0.15}
@@ -37,6 +37,10 @@ services:
       POSTGRES_PORT: "5432"
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-300}
+    volumes:
+      # Host ``data/`` (includes ``data/scraped/``) must be visible for ingest + RAG.
+      # Without this, only files baked into the image at build time exist under /app/data.
+      - ./data:/app/data
     ports:
       - "${WEB_HOST_PORT:-8001}:8000"
     depends_on:

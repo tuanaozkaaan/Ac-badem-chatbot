@@ -47,10 +47,12 @@ from chatbot.services.embedding import _retrieve_top_chunks_by_embedding
 from chatbot.services.extractive import _try_extractive_answer
 from chatbot.services.intents import (
     _asks_subunits_of_named_faculty,
+    _canonical_campus_address_reply,
     _faculty_department_catalog_intent,
     _general_acibadem_intro_intent,
     _green_or_sustainable_campus_question,
     _is_extractive_question,
+    _wants_postal_address_detail,
 )
 from chatbot.services.language import (
     _ascii_fold_turkish,
@@ -175,6 +177,40 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
                 "nerede",
             )
         )
+        ql = (question or "").lower()
+        # RAG rarely surfaces www iletişim/ulasım chunks; OBS Bologna pages then dominate
+        # scores yet carry no postal block. Small LLMs also ignore the injected
+        # OFFICIAL_CAMPUS_ADDRESS_BLOCK and emit English refusals — skip the LLM entirely
+        # for straightforward postal + optional transport pointer questions.
+        if address_intent and (
+            _wants_postal_address_detail(ql)
+            or (
+                "ulasim" in q_fold
+                and any(x in q_fold for x in ("kampus", "universite", "universitesi", "acibadem"))
+            )
+        ):
+            ul_hint = ""
+            if "ulasim" in q_fold or "transportation" in ql or "transport " in ql:
+                ul_hint = (
+                    "\n\nGüncel toplu taşıma ve kampüse ulaşım için resmî web sitesindeki "
+                    "İletişim / Ulaşım bölümüne bakmanızı öneririm."
+                    if is_tr
+                    else "\n\nFor public transport and directions, see the official website "
+                    "Contact / Transportation section."
+                )
+            body = _canonical_campus_address_reply(is_tr) + ul_hint
+            logger.info("ANSWER_SOURCE=EXTRACTIVE canonical_campus_address skip_llm")
+            return _finalize(
+                build_assistant_reply(
+                    conv,
+                    body,
+                    attach_followup=False,
+                    is_tr=is_tr,
+                    question=question,
+                ),
+                answer_source=ANSWER_SOURCE_EXTRACTIVE,
+            )
+
         dept_cat = _faculty_department_catalog_intent(question)
         sub_fac_units = _asks_subunits_of_named_faculty(question)
         general_intro = _general_acibadem_intro_intent(question)
@@ -220,6 +256,15 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
         meta.retrieved_chunks = list(chunks)
         meta.latency_ms["retrieve"] = retrieve_ms
         context = _context_from_hybrid_chunks(chunks)
+        logger.warning(
+            "RAG_PIPELINE after_retrieval raw_chunks=%s context_blob_chars=%s k_ctx=%s "
+            "filters_empty=%s matched_terms=%s",
+            len(chunks),
+            len(context or ""),
+            k_ctx,
+            filters.is_empty(),
+            filters.matched_terms,
+        )
         logger.info(
             "/ask hybrid_retrieval done in %.2fs chunks=%s matched_terms=%s",
             retrieve_ms / 1000.0,
@@ -261,6 +306,14 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
             max_chars=selected_max_chars,
         )
         context = selected_context
+        logger.warning(
+            "RAG_PIPELINE after_select_for_llm selected_chars=%s selected_block_labels=%s "
+            "retrieval_blocks_seen=%s pruned_empty=%s",
+            len(context or ""),
+            selected_sources,
+            retrieved_chunks,
+            not (context or "").strip(),
+        )
         logger.info("SELECTED_CONTEXT_FILES=%s", selected_sources)
         logger.info(
             "OLLAMA_PRECHECK question=%r retrieved_chunks=%s selected_sources=%s context_chars=%s",

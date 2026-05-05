@@ -13,13 +13,12 @@ services:
       DJANGO_ALLOWED_HOSTS: "127.0.0.1,localhost,web"
     # Source bind-mounts let teammates edit Python/HTML/static assets and see changes
     # without rebuilding the image. Restart the `web` service to pick up Python changes.
+    # ``./data`` is mounted in the base ``docker-compose.yml`` for RAG corpora.
     volumes:
-      - ./data:/app/data
       - ./templates:/app/templates
       - ./static:/app/static
       - ./acu_chatbot:/app/acu_chatbot
       - ./chatbot:/app/chatbot
-      - ./rag:/app/rag
       - ./scripts:/app/scripts
 
   db:

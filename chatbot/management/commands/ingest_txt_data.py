@@ -104,14 +104,38 @@ def _word_chunks(text: str, *, spec: ChunkingSpec) -> list[str]:
     return out
 
 
+def _discover_txt_files(data_dir: Path) -> list[Path]:
+    """Return every ``*.txt`` under ``data_dir``, skipping hidden path segments."""
+    found: list[Path] = []
+    for path in sorted(data_dir.rglob("*.txt")):
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(data_dir)
+        except ValueError:
+            continue
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        found.append(path)
+    return found
+
+
 class Command(BaseCommand):
-    help = "Ingest /app/data/*.txt into ScrapedPage + PageChunk (clears existing rows first)."
+    help = (
+        "Ingest ``.txt`` files under ``--data-dir`` (recursively, including "
+        "``scraped/``) into ScrapedPage + PageChunk. Clears prior rows from "
+        "those files first."
+    )
 
     def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument(
             "--data-dir",
             default="/app/data",
-            help="Directory containing .txt files (default: /app/data).",
+            help=(
+                "Root directory for ``.txt`` discovery (default: /app/data). "
+                "All ``*.txt`` under this tree are ingested (e.g. "
+                "data/acibadem_contact.txt and data/scraped/foo.txt)."
+            ),
         )
         parser.add_argument(
             "--chunk-words",
@@ -145,7 +169,7 @@ class Command(BaseCommand):
         if not data_dir.is_dir():
             raise NotADirectoryError(f"Not a directory: {data_dir}")
 
-        txt_files = sorted(data_dir.glob("*.txt"))
+        txt_files = sorted(_discover_txt_files(data_dir))
         if not txt_files:
             self.stdout.write(self.style.WARNING(f"No .txt files found in {data_dir}"))
             return

@@ -296,6 +296,12 @@ def _retrieve_top_chunks_by_embedding(
             filters.matched_terms,
         )
         if len(hard_hits) >= _HYBRID_MIN_HARD_HITS or len(hard_hits) >= max(1, k):
+            logger.warning(
+                "RAG_RETRIEVE hybrid_done count=%s mode=hard_only k=%s matched_terms=%s",
+                len(hard_hits),
+                k,
+                filters.matched_terms,
+            )
             return hard_hits
         # Hard pass produced something but not enough — keep what we have
         # and TOP UP from the global pass below; we never throw the
@@ -316,6 +322,11 @@ def _retrieve_top_chunks_by_embedding(
     mat, metas_t = _embedding_matrix_pack(cache_key)
     metas = list(metas_t)
     if mat.shape[0] == 0 or mat.shape[1] == 0 or not metas:
+        logger.warning(
+            "RAG_RETRIEVE empty_embedding_matrix: no ChunkEmbedding rows usable "
+            "(expected_model=%r). Run ingest + chunk + create_embeddings.",
+            EXPECTED_EMBEDDING_MODEL,
+        )
         return []
 
     if int(qv.shape[0]) != mat.shape[1]:
@@ -381,7 +392,22 @@ def _retrieve_top_chunks_by_embedding(
             seen_ids.add(row["chunk_id"])
             if len(merged) >= max(k, len(hard_hits)):
                 break
-        return merged[: max(k, len(hard_hits))]
+        final = merged[: max(k, len(hard_hits))]
+        logger.warning(
+            "RAG_RETRIEVE hybrid_done count=%s mode=merged hard_hits=%s k=%s matched_terms=%s",
+            len(final),
+            len(hard_hits),
+            k,
+            filters.matched_terms,
+        )
+        return final
+    logger.warning(
+        "RAG_RETRIEVE hybrid_done count=%s mode=global hard_hits=%s k=%s matched_terms=%s",
+        len(out),
+        len(hard_hits),
+        k,
+        filters.matched_terms,
+    )
     return out
 
 

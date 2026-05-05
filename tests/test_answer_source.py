@@ -11,6 +11,7 @@ import pytest
 
 import chatbot.services.ask_orchestrator as ask_orchestrator
 from chatbot.services.ask_orchestrator import (
+    ANSWER_SOURCE_EXTRACTIVE,
     ANSWER_SOURCE_LLM_TIMEOUT,
     ANSWER_SOURCE_NO_INFO,
     ANSWER_SOURCE_RAG_LLM,
@@ -47,6 +48,34 @@ def _stub_retrieval(monkeypatch: pytest.MonkeyPatch, *, with_context: bool = Tru
         lambda question, k, *, source_type=None, filters=None: list(chunks),
     )
     monkeypatch.setattr(ask_orchestrator, "_is_extractive_question", lambda question: False)
+
+
+@pytest.mark.django_db
+def test_campus_postal_and_transport_skips_llm_and_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Postal campus questions must not depend on irrelevant OBS chunks or Gemma."""
+    from chatbot.models import Conversation
+
+    def _should_not_retrieve(*_a, **_kw):
+        raise AssertionError("retrieval must be skipped for canonical campus address")
+
+    monkeypatch.setattr(ask_orchestrator, "_retrieve_top_chunks_by_embedding", _should_not_retrieve)
+    monkeypatch.setattr(
+        ask_orchestrator,
+        "ask_gemma",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("LLM must not run")),
+    )
+
+    conv = Conversation.objects.create(title="", session_key="t-canonical-address")
+    q = "Acıbadem Üniversitesi kampüs adresi ve ulaşım bilgisi nedir?"
+    payload, status, meta = ask_orchestrator.run_ask(q, conv)
+
+    assert status == 200, payload
+    assert meta.answer_source == ANSWER_SOURCE_EXTRACTIVE
+    assert "Kerem Aydınlar" in (payload.get("answer") or "")
+    assert "Kayışdağı" in (payload.get("answer") or "")
+    assert "ulaşım" in (payload.get("answer") or "").lower()
 
 
 @pytest.mark.django_db
