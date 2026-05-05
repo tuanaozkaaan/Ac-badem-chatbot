@@ -33,9 +33,23 @@ _SAFE_FALLBACK_EN = (
     "For the most accurate and up-to-date information, please check Acıbadem University’s official website."
 )
 
+# Retrieval defaults (override via ACU_EMBEDDING_MIN_COSINE / ACU_TIER_PRIMARY_TRUST_MIN).
+# Cosine floor stays permissive for short queries; primary VIP gate is strict — below it
+# we merge primary + scraped (secondary) candidate lists for the LLM.
+DEFAULT_ACU_EMBEDDING_MIN_COSINE = 0.30
+DEFAULT_ACU_TIER_PRIMARY_TRUST_MIN = 0.75
+
+# ``ingest_txt_data`` writes these onto ``PageChunk.metadata["tier"]`` for tiered retrieval.
+CORPUS_TIER_PRIMARY = "primary"
+CORPUS_TIER_SECONDARY = "secondary"
+
 __all__ = [
     "ACIBADEM_GENERAL_FOCUS_BLOCK",
     "OFFICIAL_CAMPUS_ADDRESS_BLOCK",
     "_SAFE_FALLBACK_TR",
     "_SAFE_FALLBACK_EN",
+    "DEFAULT_ACU_EMBEDDING_MIN_COSINE",
+    "DEFAULT_ACU_TIER_PRIMARY_TRUST_MIN",
+    "CORPUS_TIER_PRIMARY",
+    "CORPUS_TIER_SECONDARY",
 ]

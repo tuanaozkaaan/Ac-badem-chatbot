@@ -463,6 +463,12 @@ def parse_query(question: str) -> QueryFilters:
                     content_types.append(ct)
             matched.append(f"intent:{','.join(ctypes)}")
 
+    # Intent-only tags (no program anchor) must not steer retrieval: they exist for
+    # logging/tests but would pair with hybrid hard-pass metadata if that mode is on.
+    if not department and course_code is None and semester is None:
+        faculty = None
+        content_types = []
+
     return QueryFilters(
         faculty=faculty,
         department=department,

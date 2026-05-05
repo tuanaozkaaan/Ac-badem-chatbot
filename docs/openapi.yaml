@@ -322,6 +322,9 @@ components:
         semester:
           type: integer
           description: Promoted from chunk metadata when present.
+        tier:
+          type: string
+          description: Promoted from chunk metadata when present; `primary` = curated root data files, `secondary` = scraped subtree.
         metadata:
           type: object
           additionalProperties: true

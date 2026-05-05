@@ -11,6 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from chatbot.models import PageChunk, ScrapedPage
+from chatbot.services.constants import CORPUS_TIER_PRIMARY, CORPUS_TIER_SECONDARY
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -107,11 +108,12 @@ def _word_chunks(text: str, *, spec: ChunkingSpec) -> list[str]:
 def _discover_txt_files(data_dir: Path) -> list[Path]:
     """Return every ``*.txt`` under ``data_dir``, skipping hidden path segments."""
     found: list[Path] = []
-    for path in sorted(data_dir.rglob("*.txt")):
+    root = data_dir.resolve()
+    for path in sorted(root.rglob("*.txt")):
         if not path.is_file():
             continue
         try:
-            rel = path.relative_to(data_dir)
+            rel = path.relative_to(root)
         except ValueError:
             continue
         if any(part.startswith(".") for part in rel.parts):
@@ -120,21 +122,58 @@ def _discover_txt_files(data_dir: Path) -> list[Path]:
     return found
 
 
+def _ingest_tier_for_path(file_path: Path, data_root: Path) -> str:
+    """VIP ``data/*.txt`` → primary; crawler export tree ``data/scraped/*.txt`` → secondary."""
+    root = data_root.resolve()
+    fp = file_path.resolve()
+    try:
+        rel = fp.relative_to(root)
+    except ValueError:
+        return CORPUS_TIER_SECONDARY
+    if not rel.parts:
+        return CORPUS_TIER_SECONDARY
+    if rel.parts[0].casefold() == "scraped":
+        return CORPUS_TIER_SECONDARY
+    return CORPUS_TIER_PRIMARY
+
+
+def _resolve_data_dir(data_dir_arg: str | None) -> Path:
+    """Corpus root: explicit CLI > env > project ``data/`` > legacy ``/app/data``."""
+    if data_dir_arg:
+        return Path(str(data_dir_arg)).expanduser().resolve()
+
+    env = (os.environ.get("ACU_DATA_DIR") or os.environ.get("DJANGO_DATA_DIR") or "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+
+    from django.conf import settings
+
+    project_data = (settings.BASE_DIR / "data").resolve()
+    docker_default = Path("/app/data").resolve()
+    if project_data.is_dir():
+        return project_data
+    if docker_default.is_dir():
+        return docker_default
+    return project_data
+
+
 class Command(BaseCommand):
     help = (
-        "Ingest ``.txt`` files under ``--data-dir`` (recursively, including "
-        "``scraped/``) into ScrapedPage + PageChunk. Clears prior rows from "
-        "those files first."
+        "Ingest every ``.txt`` under the corpus root (recursive), including "
+        "the repository ``data/`` tree (e.g. ``acibadem_contact.txt`` at the "
+        "root and ``scraped/*.txt``), into ScrapedPage + PageChunk. "
+        "Re-ingesting a file clears its prior rows first."
     )
 
     def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument(
             "--data-dir",
-            default="/app/data",
+            default=None,
             help=(
-                "Root directory for ``.txt`` discovery (default: /app/data). "
-                "All ``*.txt`` under this tree are ingested (e.g. "
-                "data/acibadem_contact.txt and data/scraped/foo.txt)."
+                "Root for recursive ``*.txt`` discovery. "
+                "Default: ``ACU_DATA_DIR`` / ``DJANGO_DATA_DIR`` env, else "
+                "``<project>/data`` (same as ``/app/data`` in Docker). "
+                "Must point at the parent of ``scraped/``, not only ``data/scraped``."
             ),
         )
         parser.add_argument(
@@ -157,7 +196,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        data_dir = Path(str(options["data_dir"])).expanduser()
+        data_dir = _resolve_data_dir(options.get("data_dir"))
         spec = ChunkingSpec(
             chunk_words=int(options["chunk_words"]),
             overlap_words=int(options["overlap_words"]),
@@ -170,8 +209,13 @@ class Command(BaseCommand):
             raise NotADirectoryError(f"Not a directory: {data_dir}")
 
         txt_files = sorted(_discover_txt_files(data_dir))
+        self.stdout.write(
+            self.style.NOTICE(
+                f"ingest_txt_data: corpus_root={data_dir} discovered_txt_files={len(txt_files)}"
+            )
+        )
         if not txt_files:
-            self.stdout.write(self.style.WARNING(f"No .txt files found in {data_dir}"))
+            self.stdout.write(self.style.WARNING(f"No .txt files found under {data_dir}"))
             return
 
         with transaction.atomic():
@@ -184,6 +228,9 @@ class Command(BaseCommand):
                 content = raw.strip()
                 if not content:
                     continue
+
+                tier = _ingest_tier_for_path(file_path, data_dir)
+                page_metadata = {"tier": tier}
 
                 # Use stable, Docker-safe pseudo-URL so URLField uniqueness is satisfied.
                 # (We don't have a real URL for local text files.)
@@ -213,6 +260,7 @@ class Command(BaseCommand):
                     source_type=source_type,
                     content=content,
                     content_hash=content_hash,
+                    metadata=page_metadata,
                     crawled_at=now,
                 )
 
@@ -240,6 +288,7 @@ class Command(BaseCommand):
                             url=pseudo_url,
                             char_count=len(chunk_text),
                             token_count_estimate=max(1, len(chunk_text) // 4),
+                            metadata=dict(page_metadata),
                         )
                     )
 

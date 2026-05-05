@@ -60,6 +60,7 @@ _PROMOTED_METADATA_KEYS: tuple[str, ...] = (
     "faculty",
     "course_code",
     "semester",
+    "tier",
 )
 
 

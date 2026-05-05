@@ -126,7 +126,9 @@ def _context_likely_relevant(question: str, context: str) -> bool:
         )
         if time_intent and (re.search(r"\b(19|20)\d{2}\b", context or "") is not None):
             return True
-        location_intent = any(k in qf for k in ("adres", "address", "kampus", "campus", "nerede", "where"))
+        location_intent = any(
+            k in qf for k in ("adres", "address", "kampus", "campus", "nerede", "where", "konum", "location")
+        )
         if location_intent and any(k in ctxf for k in ("atasehir", "ataşehir", "istanbul", "kayisdagi", "kayışdağı", "cad", "no:")):
             return True
         # Generic fallback for Acibadem-related questions when context clearly contains Acibadem text.

@@ -13,25 +13,25 @@ The HTTP-facing strict-rag verification view stays in the legacy module
 / future ``api/v1/views.py`` and consumes the helpers below — services
 remain HTTP-agnostic.
 
-Hybrid filter strategy (Step 4.3)
----------------------------------
-RAG quality on a small Bologna corpus is dominated by namespace
-disambiguation: "Bilgisayar Mühendisliği bölüm başkanı kim?" should hit
-ONE chunk, not the program-overview page just because cosine puts it
-0.01 higher. We solve that with a *hybrid* filter:
+Hybrid filter strategy (Step 4.3) — **hard pass opt-in**
+-------------------------------------------------------
+The metadata-aware *hard* pass (parser → SQL pre-filter) is **disabled by
+default (set :envvar:`ACU_ENABLE_HYBRID_HARD_PASS` to ``1`` to restore).
+Without it, every query uses the tier-aware global cosine path only, which
+avoids empty or off-partition hits on cross-cutting questions (people, FAQ).
 
-    1. Parse the query (regex parser, no LLM).
-    2. If parser produced any structured filter, run a metadata-aware
-       pass against ``PageChunk.metadata`` JSONB columns. If that pass
-       returned at least :data:`_HYBRID_MIN_HARD_HITS` chunks, use it as
-       the final result.
-    3. Otherwise (no parser hits, or hard pass too thin) fall back to
-       the original global cosine top-k. This guarantees the retriever
-       never returns ``[]`` when there *is* relevant content somewhere.
+When enabled, the historical behaviour returns: structured filters from
+:func:`~chatbot.services.query_parser.parse_query` may shrink the candidate
+set before cosine ranking.
 
-The hard pass is intentionally small-set: when filters select 5–25
-chunks we just stack them and run an O(N) cosine — no caching needed.
-The full-corpus path keeps using ``_embedding_matrix_pack`` LRU.
+Tiered global ranking (``data/*.txt`` VIP)
+-------------------------------------------
+The full-corpus path uses ``_embedding_matrix_pack`` LRU. Rows with
+``metadata["tier"]=="primary"`` are checked first: if the best cosine on that
+subset clears :envvar:`ACU_TIER_PRIMARY_TRUST_MIN`, those rows win exclusively.
+Otherwise **all** primary and secondary row indices are pooled, sorted by cosine
+descending, deduped implicitly by top-k selection from that order (secondary is
+never skipped when primary confidence is below the trust bar).
 
 Allowed dependency direction: embedding has no fan-out into other
 services. ``chatbot.services.query_parser`` is a dependency of this
@@ -46,6 +46,11 @@ from functools import lru_cache
 import numpy as np
 from django.db.models import Count, Max, Q
 
+from chatbot.services.constants import (
+    CORPUS_TIER_PRIMARY,
+    DEFAULT_ACU_EMBEDDING_MIN_COSINE,
+    DEFAULT_ACU_TIER_PRIMARY_TRUST_MIN,
+)
 from chatbot.services.query_parser import QueryFilters, parse_query
 
 logger = logging.getLogger(__name__)
@@ -78,6 +83,129 @@ _STRICT_RAG_NOT_FOUND = "BİLGİ BULUNAMADI (NO CONTEXT FROM DB)"
 # specific question like "bölüm başkanı" (one true chunk + a couple of
 # program-overview chunks) does not unnecessarily fall back.
 _HYBRID_MIN_HARD_HITS = 3
+
+
+def _hybrid_hard_pass_enabled() -> bool:
+    raw = (os.environ.get("ACU_ENABLE_HYBRID_HARD_PASS") or "0").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def _read_min_cosine_floor() -> float:
+    raw_min = (os.environ.get("ACU_EMBEDDING_MIN_COSINE") or "").strip()
+    base = DEFAULT_ACU_EMBEDDING_MIN_COSINE if not raw_min else raw_min
+    try:
+        min_cos = float(base)
+    except ValueError:
+        min_cos = DEFAULT_ACU_EMBEDDING_MIN_COSINE
+    return max(0.0, min(min_cos, 0.999))
+
+
+def _read_primary_tier_trust_min() -> float:
+    """Best primary cosine must reach this to skip mixed primary+secondary ranking."""
+    raw = (os.environ.get("ACU_TIER_PRIMARY_TRUST_MIN") or "").strip()
+    base = DEFAULT_ACU_TIER_PRIMARY_TRUST_MIN if not raw else raw
+    try:
+        v = float(base)
+    except ValueError:
+        v = DEFAULT_ACU_TIER_PRIMARY_TRUST_MIN
+    v = max(0.0, min(v, 0.999))
+    # Guard: mis-set env (e.g. 0.35) must not enable primary-only on weak matches.
+    if v < 0.60:
+        v = DEFAULT_ACU_TIER_PRIMARY_TRUST_MIN
+    return v
+
+
+def _chunk_tier(meta_row: dict[str, object]) -> str | None:
+    md = meta_row.get("metadata")
+    if not isinstance(md, dict):
+        return None
+    t = md.get("tier")
+    return str(t) if t is not None else None
+
+
+def _pick_use_idx_ordered(
+    sims: np.ndarray,
+    ordered_global_idx: list[int],
+    k_eff: int,
+    min_cos: float,
+) -> list[int]:
+    """Prefer scores above ``min_cos``, but always fall back to plain top-``k_eff``.
+
+    Short entity queries can land below a cosine floor; the LLM still needs those
+    chunks. Set ``ACU_EMBEDDING_MIN_COSINE=0`` to skip the soft preference entirely.
+    """
+    pool_n = min(len(ordered_global_idx), max(k_eff * 5, k_eff + 16))
+    top_idx = ordered_global_idx[:pool_n]
+    if min_cos <= 0:
+        return [int(i) for i in top_idx[:k_eff]]
+    picked: list[int] = []
+    for i in top_idx:
+        if float(sims[int(i)]) >= min_cos:
+            picked.append(int(i))
+        if len(picked) >= k_eff:
+            break
+    return picked if picked else [int(i) for i in top_idx[:k_eff]]
+
+
+def _merge_primary_secondary_picks(
+    sims: np.ndarray,
+    idx_primary: list[int],
+    idx_secondary: list[int],
+    k_eff: int,
+    min_cos: float,
+) -> list[int]:
+    """Pool primary + secondary rows, rank by cosine only, then apply top-k / min_cos gate.
+
+    Primary-first ordering would starve high-scoring scraped hits; the LLM receives
+    the best matches regardless of tier when we are not in the high-confidence
+    primary-only mode.
+    """
+    combined: list[int] = sorted(
+        {int(j) for j in (*idx_primary, *idx_secondary)},
+        key=lambda j: float(sims[int(j)]),
+        reverse=True,
+    )
+    if not combined:
+        return []
+    return _pick_use_idx_ordered(sims, combined, k_eff, min_cos)
+
+
+def _tiered_global_use_indices(
+    sims: np.ndarray,
+    metas: list[dict[str, object]],
+    k_eff: int,
+    min_cos: float,
+    tier_trust: float,
+) -> tuple[list[int], str]:
+    """Tier-aware ranking: strict primary-only when confident; else primary+secondary merge."""
+    n = len(metas)
+    idx_primary = [j for j in range(n) if _chunk_tier(metas[j]) == CORPUS_TIER_PRIMARY]
+    idx_secondary = [j for j in range(n) if _chunk_tier(metas[j]) != CORPUS_TIER_PRIMARY]
+
+    if idx_primary:
+        p_arr = np.array(idx_primary, dtype=np.intp)
+        sub_sims = sims[p_arr]
+        best_primary = float(np.max(sub_sims))
+        if best_primary >= tier_trust:
+            order_local = np.argsort(-sub_sims)
+            ordered_global = [int(idx_primary[int(i)]) for i in order_local]
+            return (
+                _pick_use_idx_ordered(sims, ordered_global, k_eff, min_cos),
+                f"primary_trust best_cos={best_primary:.4f}>={tier_trust}",
+            )
+        merged = _merge_primary_secondary_picks(
+            sims, idx_primary, idx_secondary, k_eff, min_cos
+        )
+        return (
+            merged,
+            f"merge_primary_secondary primary_best={best_primary:.4f}<{tier_trust}",
+        )
+
+    ordered_global = [int(i) for i in np.argsort(-sims)]
+    return (
+        _pick_use_idx_ordered(sims, ordered_global, k_eff, min_cos),
+        "no_primary_tier_rows",
+    )
 
 
 @lru_cache(maxsize=1)
@@ -161,23 +289,40 @@ def _build_metadata_q(filters: QueryFilters, source_type: str | None) -> Q | Non
     the ``Q`` — a missing filter is *not* a wildcard match, it simply
     contributes nothing. ``content_types`` is OR-joined: a query with
     ``("bologna_contact", "contact")`` accepts either tag.
+
+    Scope rule (Adım 5.5+)
+    ----------------------
+    ``faculty`` and ``content_types`` are applied only when the question
+    already pins a *programmatic* slice of the corpus via ``department``,
+    ``course_code``, or ``semester``. Otherwise a lone intent tag (e.g.
+    ``bologna_academic_staff`` from "personnel" wording) or a bare faculty
+    mention would shrink retrieval to the wrong partition and miss
+    entity/location answers that live under unrelated ``content_type``
+    rows or generic www text.
     """
     clauses: list[Q] = []
     if source_type:
         clauses.append(Q(chunk__source_type=source_type))
+
+    narrow_program_scope = bool(
+        filters.department or filters.course_code or filters.semester is not None
+    )
+
     if filters.department:
         clauses.append(Q(chunk__metadata__department=filters.department))
-    if filters.faculty:
-        clauses.append(Q(chunk__metadata__faculty=filters.faculty))
     if filters.course_code:
         clauses.append(Q(chunk__metadata__course_code=filters.course_code))
     if filters.semester is not None:
         clauses.append(Q(chunk__metadata__semester=filters.semester))
-    if filters.content_types:
-        ct_q = Q()
-        for ct in filters.content_types:
-            ct_q |= Q(chunk__metadata__content_type=ct)
-        clauses.append(ct_q)
+
+    if narrow_program_scope:
+        if filters.faculty:
+            clauses.append(Q(chunk__metadata__faculty=filters.faculty))
+        if filters.content_types:
+            ct_q = Q()
+            for ct in filters.content_types:
+                ct_q |= Q(chunk__metadata__content_type=ct)
+            clauses.append(ct_q)
 
     if not clauses:
         return None
@@ -285,32 +430,34 @@ def _retrieve_top_chunks_by_embedding(
 
     qv = _embed_query_normalized(question, EXPECTED_EMBEDDING_MODEL)
 
-    # ---- 1) Hard metadata pass ----
+    # ---- 1) Hard metadata pass (opt-in: ACU_ENABLE_HYBRID_HARD_PASS=1) ----
     hard_hits: list[dict] = []
-    metadata_q = _build_metadata_q(filters, source_type)
-    if metadata_q is not None:
-        hard_hits = _retrieve_with_metadata_filter(qv, k=k, metadata_q=metadata_q)
-        logger.info(
-            "retrieve(hybrid,hard): matched=%s filters=%s",
-            len(hard_hits),
-            filters.matched_terms,
-        )
-        if len(hard_hits) >= _HYBRID_MIN_HARD_HITS or len(hard_hits) >= max(1, k):
-            logger.warning(
-                "RAG_RETRIEVE hybrid_done count=%s mode=hard_only k=%s matched_terms=%s",
+    metadata_q: Q | None = None
+    if _hybrid_hard_pass_enabled():
+        metadata_q = _build_metadata_q(filters, source_type)
+        if metadata_q is not None:
+            hard_hits = _retrieve_with_metadata_filter(qv, k=k, metadata_q=metadata_q)
+            logger.info(
+                "retrieve(hybrid,hard): matched=%s filters=%s",
                 len(hard_hits),
-                k,
                 filters.matched_terms,
             )
-            return hard_hits
-        # Hard pass produced something but not enough — keep what we have
-        # and TOP UP from the global pass below; we never throw the
-        # parser-selected chunks away on the way to the fallback.
-        logger.info(
-            "retrieve(hybrid,topup): hard_hits=%s below threshold (%s); merging with global",
-            len(hard_hits),
-            _HYBRID_MIN_HARD_HITS,
-        )
+            if len(hard_hits) >= _HYBRID_MIN_HARD_HITS or len(hard_hits) >= max(1, k):
+                logger.warning(
+                    "RAG_RETRIEVE hybrid_done count=%s mode=hard_only k=%s matched_terms=%s",
+                    len(hard_hits),
+                    k,
+                    filters.matched_terms,
+                )
+                return hard_hits
+            # Hard pass produced something but not enough — keep what we have
+            # and TOP UP from the global pass below; we never throw the
+            # parser-selected chunks away on the way to the fallback.
+            logger.info(
+                "retrieve(hybrid,topup): hard_hits=%s below threshold (%s); merging with global",
+                len(hard_hits),
+                _HYBRID_MIN_HARD_HITS,
+            )
 
     # ---- 2) Global cosine pass ----
     base = ChunkEmbedding.objects.select_related("chunk")
@@ -338,33 +485,11 @@ def _retrieve_top_chunks_by_embedding(
         return []
 
     sims = mat @ qv
-    order = np.argsort(-sims)
-    k_eff = max(1, min(int(k), len(order)))
-    # Examine extra candidates so a similarity floor can still return up to k_eff chunks.
-    pool = min(len(order), max(k_eff * 5, k_eff + 16))
-    top_idx = order[:pool]
+    k_eff = max(1, min(int(k), len(sims)))
+    tier_trust = _read_primary_tier_trust_min()
+    min_cos = _read_min_cosine_floor()
 
-    # Min cosine similarity (cosine = dot product on L2-normalized rows). Lower = more permissive.
-    # If nothing meets the bar, fall back to plain top-k so "veri yok" does not trigger from this gate alone.
-    # Default 0.55 was calibrated in Adım 4.4 against the
-    # paraphrase-multilingual-MiniLM-L12-v2 distribution: in-scope hard-pass
-    # bands sit at 0.62-0.84 and out-of-scope/noise at 0.36-0.47, so 0.55 cleanly
-    # separates them while preserving short course chunks (semester=1 grew below
-    # 0.65 with the new model).
-    raw_min = (os.environ.get("ACU_EMBEDDING_MIN_COSINE") or "0.55").strip()
-    try:
-        min_cos = float(raw_min)
-    except ValueError:
-        min_cos = 0.55
-    min_cos = max(0.0, min(min_cos, 0.999))
-
-    picked: list[int] = []
-    for i in top_idx:
-        if float(sims[int(i)]) >= min_cos:
-            picked.append(int(i))
-        if len(picked) >= k_eff:
-            break
-    use_idx = picked if picked else [int(i) for i in top_idx[:k_eff]]
+    use_idx, tier_mode = _tiered_global_use_indices(sims, metas, k_eff, min_cos, tier_trust)
 
     out: list[dict] = []
     for i in use_idx:
@@ -380,6 +505,14 @@ def _retrieve_top_chunks_by_embedding(
             "metadata": dict(base_row.get("metadata") or {}),
         }
         out.append(row)
+
+    logger.warning(
+        "RAG_RETRIEVE tiered_global mode=%s k_eff=%s min_cos=%s tier_trust=%s",
+        tier_mode,
+        k_eff,
+        min_cos,
+        tier_trust,
+    )
 
     # ---- 3) Merge: parser-selected chunks always lead, global fills the rest. ----
     if hard_hits:

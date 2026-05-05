@@ -235,6 +235,11 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
             )
         )
 
+        wants_person_fact = bool(
+            re.search(r"\bkimdir\b", ql, flags=re.IGNORECASE)
+            or re.search(r"\bwho\s+is\b", ql, flags=re.IGNORECASE)
+        )
+
         k_ctx = 5
         if address_intent or campus_green_q:
             k_ctx = 8
@@ -249,6 +254,10 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
         if dept_cat:
             # Fakülte tam listesi için daha fazla parça + bağlam sınırı (model yine kısaltabilir).
             k_ctx = max(k_ctx, 18)
+        # Proper-name / "kimdir" questions rarely repeat department keywords; the
+        # correct chunk may sit below the default top-5 cosine band.
+        if wants_person_fact:
+            k_ctx = max(k_ctx, 10)
         t_retrieve = time.perf_counter()
         chunks = _retrieve_top_chunks_by_embedding(question, k=k_ctx, filters=filters)
         retrieve_ms = int((time.perf_counter() - t_retrieve) * 1000)
@@ -291,6 +300,9 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
             context = re.sub(r"\n{3,}", "\n\n", context).strip()
         selected_max_chunks = int(os.environ.get("DJANGO_SELECTED_MAX_CHUNKS", "4"))
         selected_max_chars = int(os.environ.get("DJANGO_SELECTED_MAX_CHARS", "4200"))
+        if wants_person_fact:
+            selected_max_chunks = max(selected_max_chunks, 8)
+            selected_max_chars = max(selected_max_chars, 5500)
         if wants_course_catalog:
             # Course-list answers need many short chunks (one per course). The
             # default budget (4 chunks / 4200 chars) prunes us back to ~one
@@ -364,6 +376,8 @@ def run_ask(question: str, conv) -> tuple[dict, int, AskMeta]:
         if wants_course_catalog:
             # Mirror the bumped select-step budget so the post-cap doesn't
             # silently truncate everything we just paid retrieval cost for.
+            max_context_chars = max(max_context_chars, selected_max_chars)
+        if wants_person_fact:
             max_context_chars = max(max_context_chars, selected_max_chars)
         if len(context) > max_context_chars:
             context = context[:max_context_chars].rsplit("\n", 1)[0].strip()
